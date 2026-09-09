@@ -1,10 +1,18 @@
 import { getDb } from '@/lib/db/db';
 
 export const WAHA_CONFIG = {
-  baseUrl: (process.env.WAHA_BASE_URL || 'http://localhost:3000').replace(/\/$/, ''),
-  session: process.env.WAHA_SESSION || 'default',
-  apiKey: process.env.WAHA_API_KEY || '',
-  csPhone: process.env.WHATSAPP_CS_PHONE || '6282252856710',
+  get baseUrl() {
+    return (process.env.WAHA_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+  },
+  get session() {
+    return process.env.WAHA_SESSION || 'default';
+  },
+  get apiKey() {
+    return process.env.WAHA_API_KEY || process.env.GATEWAY_SECRET || '';
+  },
+  get csPhone() {
+    return process.env.WHATSAPP_CS_PHONE || '6282252856710';
+  },
 };
 
 export interface LiveChatMessageRecord {
@@ -25,11 +33,12 @@ export function formatChatId(phone: string): string {
 }
 
 /**
- * Send WhatsApp text message via WAHA HTTP API
+ * Send WhatsApp text message via WAHA HTTP API / Baileys Gateway
  */
 export async function sendWahaMessage(toPhone: string, text: string): Promise<boolean> {
   // If WAHA is pointing to default Next.js port 3000 without dedicated WAHA container, avoid spamming 404s
   if (!process.env.WAHA_BASE_URL && WAHA_CONFIG.baseUrl.includes(':3000')) {
+    console.warn('[WAHA] Pengiriman dibatalkan: WAHA_BASE_URL belum dikonfigurasi di .env.');
     return false;
   }
 
@@ -42,10 +51,11 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     };
     if (WAHA_CONFIG.apiKey) {
       headers['X-Api-Key'] = WAHA_CONFIG.apiKey;
+      headers['x-gateway-secret'] = WAHA_CONFIG.apiKey;
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), 5000);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -59,8 +69,14 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     });
     clearTimeout(timeout);
 
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn(`[WAHA] Gateway returned HTTP ${res.status}: ${errText}`);
+    }
+
     return res.ok;
-  } catch {
+  } catch (err) {
+    console.warn('[WAHA] Failed to connect to WhatsApp Gateway:', err);
     return false;
   }
 }
