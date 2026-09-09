@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { recordLiveChatMessage } from '@/lib/waha.service';
 import { getDb } from '@/lib/db/db';
 
@@ -48,9 +48,9 @@ export async function POST(req: NextRequest) {
     const sessionId  = msgPayload?.sessionId || null;
     const fromMe     = Boolean(msgPayload?.fromMe || payload?.fromMe);
 
-    // ── Abaikan LID (Linked ID) duplikat dari WhatsApp Multi-Device ──
-    if (typeof senderFrom === 'string' && senderFrom.endsWith('@lid')) {
-      return NextResponse.json({ status: 'ignored', reason: 'LID duplicate ignored' });
+    // ── Abaikan echo dari bot itu sendiri (outgoing) ────────────────
+    if (fromMe) {
+      return NextResponse.json({ status: 'ignored', reason: 'Bot outgoing echo ignored' });
     }
 
     const messageBody: string =
@@ -78,57 +78,42 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Resolve session ID ─────────────────────────────────────────────
-    // Priority 1: sessionId dari gateway (sudah di-parse)
-    // Priority 2: Tag [#guest_xxx] dari body teks
-    // Priority 3: Sesi aktif terbaru (fallback)
+    // Priority 1: sessionId dari gateway (sudah di-parse dari quote/teks)
+    // Priority 2: Tag [#guest_xxx] atau #guest_xxx dari body teks
+    // Priority 3: Sesi aktif terbaru di database (fallback jika CS membalas langsung tanpa tag)
 
     let targetSessionId = '';
     let replyText = messageBody.trim();
 
-    if (sessionId) {
-      // Gateway sudah me-parse session ID
-      const existingSession = db
-        .prepare('SELECT id FROM live_chat_sessions WHERE id = ?')
-        .get(sessionId) as { id: string } | undefined;
-      if (existingSession) {
-        targetSessionId = existingSession.id;
-        // Bersihkan tag [#guest_xxx] dari replyText jika ada
-        replyText = messageBody.replace(/^\[#[a-zA-Z0-9_-]+\]\s*/, '').trim() || messageBody.trim();
-      }
+    if (sessionId && typeof sessionId === 'string' && sessionId.trim()) {
+      targetSessionId = sessionId.trim();
+      // Bersihkan tag [#guest_xxx] atau variasinya dari balasan teks
+      replyText = replyText
+        .replace(/(?:\*?\[#\s*|\*?#)[a-zA-Z0-9_-]+(?:\]\*?|:)?\s*/gi, '')
+        .trim() || replyText;
     }
 
     if (!targetSessionId) {
-      // Fallback: parse tag dari body
-      const tagMatch = messageBody.match(/^\[#([a-zA-Z0-9_-]+)\]\s*([\s\S]*)/);
-      if (tagMatch) {
-        const parsedTag = tagMatch[1];
-        const parsedText = tagMatch[2].trim();
-        const existingSession = db
-          .prepare('SELECT id FROM live_chat_sessions WHERE id = ?')
-          .get(parsedTag) as { id: string } | undefined;
-        if (existingSession) {
-          targetSessionId = existingSession.id;
-          replyText = parsedText || messageBody.trim();
-        } else {
-          replyText = parsedText || messageBody.trim();
-        }
+      // Tangkap format [#guest_xxx], *[#guest_xxx]*, #guest_xxx
+      const tagMatch = messageBody.match(/(?:\[#|#|\*\[#)([a-zA-Z0-9_-]+)(?:\]\*|\]|:)?/i);
+      if (tagMatch && tagMatch[1]) {
+        targetSessionId = tagMatch[1].trim();
+        replyText = messageBody
+          .replace(/(?:\*?\[#\s*|\*?#)[a-zA-Z0-9_-]+(?:\]\*?|:)?\s*/gi, '')
+          .trim() || messageBody.trim();
       }
     }
 
-    if (!targetSessionId) {
-      // Fallback terakhir: sesi aktif terbaru
-      const latestSession = db
-        .prepare(`SELECT id FROM live_chat_sessions ORDER BY updated_at DESC LIMIT 1`)
-        .get() as { id: string } | undefined;
-      if (latestSession) {
-        targetSessionId = latestSession.id;
-      }
-    }
-
+    // ── Validasi Ketat Sesi (Strict Session Matching) ─────────────────
+    // Pesan HANYA diterima jika memiliki identitas sesi yang valid:
+    // 1. Dideteksi via quote/reply WhatsApp oleh gateway (sessionId)
+    // 2. Ditulis secara eksplisit dengan tag [#guest_xxx] atau variasinya
+    // TIDAK ADA fallback tebak sesi agar tidak terjadi salah kirim antar pengunjung!
     if (!targetSessionId || !replyText) {
+      console.warn(`[Webhook][reqId:${requestId}] Ditolak: Pesan tidak memiliki tag sesi yang valid atau isi pesan kosong.`);
       return NextResponse.json({
         status: 'ignored',
-        reason: 'No active session found or empty reply',
+        reason: 'Missing valid session tag or empty reply (strict session matching)',
       });
     }
 
