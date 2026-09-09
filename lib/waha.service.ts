@@ -61,7 +61,7 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 3000);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -83,7 +83,7 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     return res.ok;
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
-      console.warn(`[WAHA] Timeout: WhatsApp Gateway (${url}) tidak merespon dalam 15 detik. Pastikan server gateway aktif.`);
+      console.warn(`[WAHA] Timeout: WhatsApp Gateway (${url}) tidak merespon dalam 3 detik.`);
     } else {
       console.warn('[WAHA] Failed to connect to WhatsApp Gateway:', err);
     }
