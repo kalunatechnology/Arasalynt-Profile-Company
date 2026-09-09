@@ -5,11 +5,11 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch-path=server.js server.js"
+    "dev": "node --watch-path=server.js server.js",
+    "build": "echo 'No build required for Node.js Express Gateway'"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
-    "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
