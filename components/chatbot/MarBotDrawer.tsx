@@ -86,34 +86,92 @@ function formatCurrentTime(): string {
   return `${hours}.${minutes}`;
 }
 
-const HUMAN_ESCALATION_KEYWORDS = [
-  'cs',
+// Escalation keywords & phrases to transfer chat from AI to WhatsApp Customer Service.
+// Only triggers when the user explicitly requests to speak with CS, customer service, a real person, or human.
+const ESCALATION_PHRASES = [
   'customer service',
-  'human',
-  'orang',
-  'admin',
-  'sales',
-  'konsultan',
-  'konsultasi',
-  'harga',
-  'biaya',
-  'penawaran',
-  'quotation',
-  'meeting',
-  'demo',
-  'jadwal',
-  'wa',
-  'whatsapp',
-  'telepon',
-  'hubungi',
-  'kontak',
-  'bicara dengan',
-  'kontak langsung',
+  'cust service',
+  'berbicara dengan cs',
+  'bicara dengan cs',
+  'berbicra dengan cs', // common typo
+  'bicra dengan cs',
+  'berbicara sama cs',
+  'bicara sama cs',
+  'ngomong sama cs',
+  'ngomong dengan cs',
+  'ngobrol sama cs',
+  'ngobrol dengan cs',
+  'hubungi cs',
+  'kontak cs',
+  'sambungkan ke cs',
+  'sambungkan dengan cs',
+  'chat dengan cs',
+  'chat sama cs',
+  'chat cs',
+  'bicara cs',
+  'berbicara cs',
+  'berbicara dengan orang',
+  'bicara dengan orang',
+  'berbicra dengan orang',
+  'bicara sama orang',
+  'berbicara sama orang',
+  'ngomong sama orang',
+  'ngomong dengan orang',
+  'ngobrol sama orang',
+  'ngobrol dengan orang',
+  'chat dengan orang',
+  'chat sama orang',
+  'orang asli',
+  'orang beneran',
+  'staf orang',
+  'berbicara dengan manusia',
+  'bicara dengan manusia',
+  'berbicra dengan manusia',
+  'bicara sama manusia',
+  'berbicara sama manusia',
+  'ngomong sama manusia',
+  'ngomong dengan manusia',
+  'ngobrol sama manusia',
+  'ngobrol dengan manusia',
+  'operator manusia',
+  'cs manusia',
+  'agen manusia',
+  'agent manusia',
+  'human agent',
+  'talk to human',
+  'speak with human',
+  'chat with human',
+  'real human',
+];
+
+const ESCALATION_REGEXES = [
+  // "berbicara / bicara / berbicra / ngomong / ngobrol / hubungi / kontak / sambungkan / chat" + optional "dengan/sama/ke" + "cs"
+  /\b(?:berbicara|bicara|berbicra|bicra|ngomong|ngobrol|hubungi|kontak|sambungkan|chat)\s+(?:dengan\s+|sama\s+|ke\s+)?cs\b/i,
+  // "customer service" / "cust service"
+  /\b(?:customer\s+service|cust(?:\.|\s+)?service)\b/i,
+  // "berbicara / bicara / berbicra / ngomong / ngobrol / chat" + optional "dengan/sama/ke" + "orang"
+  /\b(?:berbicara|bicara|berbicra|bicra|ngomong|ngobrol|chat)\s+(?:dengan\s+|sama\s+|ke\s+)?orang\b/i,
+  // "berbicara / bicara / berbicra / ngomong / ngobrol / chat / butuh / mau / sambungkan" + optional "dengan/sama/ke" + "manusia"
+  /\b(?:berbicara|bicara|berbicra|bicra|ngomong|ngobrol|chat|butuh|mau|sambungkan)\s+(?:dengan\s+|sama\s+|ke\s+)?manusia\b/i,
+  // "operator manusia" / "cs manusia" / "staf manusia" / "agen manusia"
+  /\b(?:operator|cs|staf|staff|agen|agent)\s+manusia\b/i,
+  // Standalone single word intent: user sends just "cs", "manusia", or "human"
+  /^(?:cs|manusia|human)$/i,
+  // English: talk/speak/chat with human/person/agent
+  /\b(?:talk\s+to|speak\s+with|chat\s+with)\s+(?:a\s+)?(?:human|person|agent)\b/i,
 ];
 
 function isEscalationKeyword(text: string): boolean {
-  const lower = text.toLowerCase();
-  return HUMAN_ESCALATION_KEYWORDS.some((kw) => lower.includes(kw));
+  const lower = text.toLowerCase().trim();
+  if (!lower) return false;
+
+  // 1. Direct phrase matching
+  if (ESCALATION_PHRASES.some((phrase) => lower.includes(phrase))) {
+    return true;
+  }
+
+  // 2. Regex pattern matching
+  return ESCALATION_REGEXES.some((regex) => regex.test(lower));
 }
 
 function createNewSessionId(): string {
@@ -124,7 +182,7 @@ const INITIAL_MESSAGE: ChatMessage = {
   id: 'initial-greeting',
   role: 'assistant',
   content:
-    'Halo! Saya MarBot, asisten cerdas Arsalynk (PT Sinergi Muda Arsa). Saya dapat membantu Anda mengetahui profil perusahaan, solusi teknologi enterprise, atau menghubungkan Anda langsung dengan Tim CS. Ada yang bisa saya bantu?',
+    'Halo! Saya ArsAI, asisten cerdas Arsalynk (PT Sinergi Muda Arsa). Saya dapat membantu Anda mengetahui profil perusahaan, solusi teknologi enterprise, atau menghubungkan Anda langsung dengan Tim CS. Ada yang bisa saya bantu?',
   timestamp: formatCurrentTime(),
 };
 
@@ -158,7 +216,7 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         )}
         <span className={isHumanCS ? styles.csSenderName : styles.senderName}>
-          {isHumanCS ? 'Customer Service' : isAssistant ? 'MarBot' : 'Anda'}
+          {isHumanCS ? 'Customer Service' : isAssistant ? 'ArsAI' : 'Anda'}
         </span>
         {isHumanCS && <span className={styles.csVerified}>WhatsApp</span>}
         <span className={styles.messageTimestamp}>· {msg.timestamp}</span>
@@ -458,7 +516,7 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
             cancelAnimationFrame(rafIdRef.current);
             rafIdRef.current = null;
           }
-          console.error('[MarBot Stream Error]', err);
+          console.error('[ArsAI Stream Error]', err);
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantPlaceholderId
@@ -510,7 +568,7 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
     const returnMsg: ChatMessage = {
       id: `system-return-${Date.now()}`,
       role: 'assistant',
-      content: 'Mode percakapan telah dikembalikan ke **MarBot AI**.',
+      content: 'Mode percakapan telah dikembalikan ke **ArsAI**.',
       timestamp: formatCurrentTime(),
     };
     setMessages((prev) => [...prev, returnMsg]);
@@ -521,16 +579,16 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
   return (
     <>
       <div
-        key="marbot-overlay"
+        key="arsai-overlay"
         className={styles.overlay}
         onClick={onClose}
         aria-hidden="true"
       />
       <section
-        key="marbot-drawer-section"
+        key="arsai-drawer-section"
         className={styles.drawer}
         role="dialog"
-        aria-label="MarBot Chat Assistant"
+        aria-label="ArsAI Chat Assistant"
         aria-modal="true"
       >
         {/* Header */}
@@ -552,7 +610,7 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
             </div>
             <div className={styles.botText}>
               <span className={styles.botName}>
-                {chatMode === 'human_cs' ? 'Customer Service' : 'MarBot'}
+                {chatMode === 'human_cs' ? 'Customer Service' : 'ArsAI'}
               </span>
               <span className={styles.botStatus}>
                 <span className={styles.statusDot} />
@@ -569,9 +627,9 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
                 type="button"
                 className={styles.switchModeBtn}
                 onClick={handleSwitchToAI}
-                title="Kembali ke mode MarBot AI"
+                title="Kembali ke mode ArsAI"
               >
-                ← Mode AI
+                ← Mode ArsAI
               </button>
             )}
             <button
@@ -604,7 +662,7 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
                 <div className={styles.miniAvatar}>
                   <MarBotIcon className={styles.miniAvatarIcon} />
                 </div>
-                <span className={styles.senderName}>MarBot</span>
+                <span className={styles.senderName}>ArsAI</span>
                 <span className={styles.messageTimestamp}>· sedang mengetik</span>
               </div>
               <div className={styles.typingContainer}>
@@ -646,7 +704,7 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
               placeholder={
                 chatMode === 'human_cs'
                   ? 'Ketik pesan untuk Customer Service...'
-                  : 'Ask MarBot anything..'
+                  : 'Ask ArsAI anything..'
               }
               className={styles.inputField}
               disabled={isLoading}
@@ -677,10 +735,12 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
           <p className={styles.disclaimer}>
             {chatMode === 'human_cs'
               ? 'Terkoneksi langsung ke WhatsApp CS (+62 822-5285-6710).'
-              : 'MarBot didukung AI & Live WhatsApp CS.'}
+              : 'ArsAI didukung AI & Live WhatsApp CS.'}
           </p>
         </footer>
       </section>
     </>
   );
 }
+
+export const ArsAIDrawer = MarBotDrawer;
