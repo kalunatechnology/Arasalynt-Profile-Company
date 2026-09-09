@@ -6,7 +6,6 @@ const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const Database = require('better-sqlite3');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -54,46 +53,61 @@ function resolveAuthPath() {
 const AUTH_PATH = resolveAuthPath();
 
 // ============================================================
-// SQLite MESSAGE STORE — untuk durable getMessage (Baileys retry)
+// PURE-JS MESSAGE STORE — untuk durable getMessage (Baileys retry)
 // PERINGATAN KRITIS: Ini BUKAN auth store.
 // File auth_info_baileys/ TIDAK BOLEH dihapus manual saat runtime.
-// Store ini hanya menyimpan proto.IMessage untuk keperluan retry decrypt.
+// Store ini menyimpan serialized IMessage ke file JSON murni (tanpa SQLite/Python/C++).
 // ============================================================
-let _msgStoreDb = null;
 let _baileysBufferJSON = null;
+const MSG_STORE_DIR = path.join(AUTH_PATH, 'msg_store');
 
-function getMsgStoreDb() {
-  if (_msgStoreDb) return _msgStoreDb;
-  const dbPath = path.join(__dirname, 'wa_message_store.db');
-  _msgStoreDb = new Database(dbPath);
-  _msgStoreDb.pragma('journal_mode = WAL');
-  _msgStoreDb.pragma('synchronous = NORMAL');
-  _msgStoreDb.exec(`
-    CREATE TABLE IF NOT EXISTS wa_messages (
-      message_id TEXT NOT NULL,
-      remote_jid TEXT NOT NULL,
-      serialized  TEXT NOT NULL,
-      created_at  INTEGER NOT NULL,
-      expires_at  INTEGER NOT NULL,
-      PRIMARY KEY (message_id, remote_jid)
-    );
-    CREATE INDEX IF NOT EXISTS idx_wa_msgs_exp ON wa_messages(expires_at);
-  `);
-  const deleted = _msgStoreDb.prepare('DELETE FROM wa_messages WHERE expires_at < ?').run(Date.now());
-  if (deleted.changes > 0) console.log(`[MsgStore] Bersihkan ${deleted.changes} pesan kadaluarsa.`);
-  return _msgStoreDb;
+function getMsgStoreDir() {
+  try {
+    if (!fs.existsSync(MSG_STORE_DIR)) {
+      fs.mkdirSync(MSG_STORE_DIR, { recursive: true });
+    }
+    return MSG_STORE_DIR;
+  } catch {
+    const fallback = path.join(os.tmpdir(), 'wa_msg_store');
+    if (!fs.existsSync(fallback)) try { fs.mkdirSync(fallback, { recursive: true }); } catch {}
+    return fallback;
+  }
 }
 
-function storeMessage(msg) {
-  if (!msg || !msg.key || !msg.key.id || !msg.key.remoteJid || !msg.message) return;
+function cleanExpiredStoredMessages() {
   try {
-    const db = getMsgStoreDb();
+    const dir = getMsgStoreDir();
+    const files = fs.readdirSync(dir);
+    const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000); // 7 hari
+    let deleted = 0;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file.endsWith('.json')) continue;
+      const fullPath = path.join(dir, file);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (stat.mtimeMs < cutoff) {
+          fs.unlinkSync(fullPath);
+          deleted++;
+        }
+      } catch {}
+    }
+    if (deleted > 0) console.log(`[MsgStore] Bersihkan ${deleted} pesan kadaluarsa.`);
+    return deleted;
+  } catch (err) {
+    return 0;
+  }
+}
+cleanExpiredStoredMessages();
+
+function storeMessage(msg) {
+  if (!msg || !msg.key || !msg.key.id || !msg.message) return;
+  try {
+    const dir = getMsgStoreDir();
     const replacer = _baileysBufferJSON && _baileysBufferJSON.replacer;
     const serialized = replacer ? JSON.stringify(msg.message, replacer) : JSON.stringify(msg.message);
-    const now = Date.now();
-    const expires = now + 7 * 24 * 60 * 60 * 1000; // 7 hari
-    db.prepare('INSERT OR REPLACE INTO wa_messages(message_id,remote_jid,serialized,created_at,expires_at) VALUES(?,?,?,?,?)')
-      .run(msg.key.id, msg.key.remoteJid, serialized, now, expires);
+    const safeId = String(msg.key.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+    fs.writeFileSync(path.join(dir, safeId + '.json'), serialized, 'utf-8');
   } catch (err) {
     console.warn('[MsgStore] Gagal simpan ' + (msg.key && msg.key.id) + ': ' + err.message);
   }
@@ -103,13 +117,17 @@ async function getMessageFromStore(key) {
   if (key && key.id && msgHistoryMap.has(key.id)) return msgHistoryMap.get(key.id);
   if (!key || !key.id) return undefined;
   try {
-    const db = getMsgStoreDb();
-    const row = key.remoteJid
-      ? db.prepare('SELECT serialized FROM wa_messages WHERE message_id=? AND remote_jid=?').get(key.id, key.remoteJid)
-      : db.prepare('SELECT serialized FROM wa_messages WHERE message_id=? LIMIT 1').get(key.id);
-    if (row) {
+    const dir = getMsgStoreDir();
+    const safeId = String(key.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filePath = path.join(dir, safeId + '.json');
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf-8');
       const reviver = _baileysBufferJSON && _baileysBufferJSON.reviver;
-      return reviver ? JSON.parse(row.serialized, reviver) : JSON.parse(row.serialized);
+      const parsed = reviver ? JSON.parse(raw, reviver) : JSON.parse(raw);
+      if (parsed) {
+        msgHistoryMap.set(key.id, parsed);
+        return parsed;
+      }
     }
   } catch (err) {
     console.warn('[MsgStore] Gagal ambil ' + key.id + ': ' + err.message);
@@ -573,7 +591,7 @@ async function startWhatsAppBot() {
       retryRequestDelayMs: 250,
       syncFullHistory: false,
       markOnlineOnConnect: true,
-      // getMessage DURABLE - menggunakan SQLite + in-memory cache
+      // getMessage DURABLE - pure-JS file store + in-memory cache
       // Kritis untuk menangani "Waiting for this message"
       getMessage: getMessageFromStore,
     });
@@ -881,8 +899,8 @@ function startConnectionWatchdog() {
 // Periodic cleanup
 setInterval(function() {
   try {
-    const r = getMsgStoreDb().prepare('DELETE FROM wa_messages WHERE expires_at < ?').run(Date.now());
-    if (r.changes) addDiagLog('info', '[MsgStore] Bersihkan ' + r.changes + ' pesan kadaluarsa.');
+    const deleted = cleanExpiredStoredMessages();
+    if (deleted) addDiagLog('info', '[MsgStore] Bersihkan ' + deleted + ' pesan kadaluarsa.');
   } catch {}
 }, 6 * 60 * 60 * 1000);
 
