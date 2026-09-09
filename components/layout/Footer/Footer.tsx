@@ -199,7 +199,7 @@ export default function Footer() {
                 </a>
               </div>
 
-              <div className="flex flex-col gap-3">
+              {/* <div className="flex flex-col gap-3">
                 <FooterTitle>SEMARANG HQ</FooterTitle>
                 <a
                   href="https://www.google.com/maps/search/?api=1&query=MG+Setos+Semarang+Indonesia"
@@ -211,7 +211,7 @@ export default function Footer() {
                   <span className="block max-[1799px]:inline">Semarang Tengah District, Semarang City, Central Java</span>{' '}
                   <span className="block max-[1799px]:inline">50133, Indonesia →</span>
                 </a>
-              </div>
+              </div> */}
 
               <div className="flex flex-col gap-3">
                 <FooterTitle>CONTACT</FooterTitle>

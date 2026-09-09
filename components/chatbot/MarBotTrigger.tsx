@@ -21,8 +21,9 @@ export function MarBotIcon({ className = '' }: { className?: string }) {
   );
 }
 
-// Alias for backwards compatibility with any cached imports
 export const MarBotAsteriskIcon = MarBotIcon;
+export const ArsAIIcon = MarBotIcon;
+export const ArsAISparkleIcon = MarBotIcon;
 
 export default function MarBotTrigger({ isOpen, onClick }: MarBotTriggerProps) {
   return (
@@ -30,12 +31,14 @@ export default function MarBotTrigger({ isOpen, onClick }: MarBotTriggerProps) {
       type="button"
       className={styles.trigger}
       onClick={onClick}
-      aria-label={isOpen ? 'Tutup MarBot AI' : 'Buka MarBot AI Assistant'}
-      title="Tanya MarBot AI Arsalynk"
+      aria-label={isOpen ? 'Tutup ArsAI' : 'Buka ArsAI Assistant'}
+      title="Tanya ArsAI Arsalynk"
       aria-expanded={isOpen}
     >
       <MarBotIcon className={styles.icon} />
-      <span className={styles.tooltip}>Tanya MarBot AI</span>
+      <span className={styles.tooltip}>Tanya ArsAI</span>
     </button>
   );
 }
+
+export const ArsAITrigger = MarBotTrigger;

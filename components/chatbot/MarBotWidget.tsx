@@ -7,13 +7,8 @@ import MarBotDrawer from './MarBotDrawer';
 export default function MarBotWidget() {
   const [isOpen, setIsOpen] = useState(false);
 
-  const toggleDrawer = () => {
-    setIsOpen((prev) => !prev);
-  };
-
-  const closeDrawer = () => {
-    setIsOpen(false);
-  };
+  const toggleDrawer = () => setIsOpen((prev) => !prev);
+  const closeDrawer = () => setIsOpen(false);
 
   return (
     <>
@@ -22,3 +17,5 @@ export default function MarBotWidget() {
     </>
   );
 }
+
+export const ArsAIWidget = MarBotWidget;

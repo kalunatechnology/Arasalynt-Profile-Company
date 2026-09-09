@@ -13,28 +13,31 @@ export const DEFAULT_CALLER_CONFIG = {
   callerToken: process.env.NEXT_PUBLIC_CHATBOT_CALLER_TOKEN || 'cb_live_0080c942f880b04ad7f3fba231432c1de43aefb24b201bd7',
 };
 
-export const MARBOT_QUICK_ACTIONS: QuickActionItem[] = [
+export const ARSAI_QUICK_ACTIONS: QuickActionItem[] = [
   {
     id: 'about-company',
-    label: 'Tentang Arsalynk & Profil Perusahaan',
+    label: '🏢 Profil & Visi Misi Arsalynk',
     prompt: 'Bisa jelaskan secara ringkas mengenai profil perusahaan PT Sinergi Muda Arsa (Arsalynk), visi misi, dan keunggulannya?',
   },
   {
     id: 'solutions-services',
-    label: 'Solusi Teknologi & Layanan Kami',
-    prompt: 'Apa saja pilar solusi teknologi dan layanan yang ditawarkan oleh Arsalynk untuk perusahaan atau organisasi?',
+    label: '⚙️ Solusi Teknologi & Layanan IT',
+    prompt: 'Apa saja pilar solusi teknologi dan layanan IT enterprise yang ditawarkan oleh Arsalynk?',
   },
   {
     id: 'case-studies-portfolio',
-    label: 'Portofolio & Studi Kasus Proyek',
+    label: '💼 Portofolio & Studi Kasus Proyek',
     prompt: 'Tolong berikan contoh studi kasus dan portofolio proyek teknologi yang pernah dikerjakan oleh Arsalynk.',
   },
   {
     id: 'consultation-contact',
-    label: 'Konsultasi & Kontak Kolaborasi',
-    prompt: 'Bagaimana cara berkonsultasi atau menghubungi tim Arsalynk untuk pengembangan proyek teknologi?',
+    label: '💬 Hubungi Tim CS (WhatsApp)',
+    prompt: 'Saya ingin berkonsultasi langsung dengan Tim Customer Service Arsalynk via WhatsApp.',
   },
 ];
+
+// Alias for backwards compatibility
+export const MARBOT_QUICK_ACTIONS = ARSAI_QUICK_ACTIONS;
 
 const getBaseUrl = (): string => {
   return (process.env.NEXT_PUBLIC_CHATBOT_API_URL || 'https://chatbot-arsalynk.vercel.app').replace(/\/$/, '');

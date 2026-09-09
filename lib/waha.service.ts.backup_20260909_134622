@@ -71,27 +71,32 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
 export function recordLiveChatMessage(
   sessionId: string,
   sender: 'user' | 'bot' | 'human_cs',
-  content: string,
-  whatsappMessageId?: string
+  content: string
 ): LiveChatMessageRecord {
   const db = getDb();
   const id = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = new Date().toISOString();
 
-  // Pastikan session ada
+  // Ensure session exists
   db.prepare(
     `INSERT INTO live_chat_sessions (id, last_message, updated_at)
      VALUES (?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET last_message = excluded.last_message, updated_at = excluded.updated_at`
   ).run(sessionId, content, now);
 
-  // Simpan pesan dengan whatsapp_message_id untuk deduplication
+  // Insert message
   db.prepare(
-    `INSERT INTO live_chat_messages (id, session_id, sender, content, created_at, whatsapp_message_id)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, sessionId, sender, content, now, whatsappMessageId || null);
+    `INSERT INTO live_chat_messages (id, session_id, sender, content, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(id, sessionId, sender, content, now);
 
-  return { id, sessionId, sender, content, createdAt: now };
+  return {
+    id,
+    sessionId,
+    sender,
+    content,
+    createdAt: now,
+  };
 }
 
 /**
@@ -121,12 +126,12 @@ export async function forwardGuestInquiryToWhatsApp(
 ): Promise<boolean> {
   const name = guestName || `Tamu Website (${sessionId.slice(-6)})`;
   const notificationText =
-    `ðŸ”” *[CHAT BARU DARI WEBSITE ARSALYNK]*\n\n` +
-    `ðŸ‘¤ *Pengirim:* ${name}\n` +
-    `ðŸ†” *Sesi:* #${sessionId}\n` +
-    `ðŸ’¬ *Pesan:* "${guestMessage}"\n\n` +
-    `â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€\n` +
-    `ðŸ‘‰ *Cara Membalas:* Cukup balas chat ini dengan awalan format:\n` +
+    `🔔 *[CHAT BARU DARI WEBSITE ARSALYNK]*\n\n` +
+    `👤 *Pengirim:* ${name}\n` +
+    `🆔 *Sesi:* #${sessionId}\n` +
+    `💬 *Pesan:* "${guestMessage}"\n\n` +
+    `──────────────────────\n` +
+    `👉 *Cara Membalas:* Cukup balas chat ini dengan awalan format:\n` +
     `*[#${sessionId}] Balasan anda...*\n\n` +
     `_Balasan Anda akan langsung muncul di layar obrolan website pengunjung secara otomatis._`;
 

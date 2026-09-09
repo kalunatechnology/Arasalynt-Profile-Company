@@ -1,5 +1,5 @@
-/* ==========================================================================
-   DB.TS — SQLite Connection, Schema & Auto-Seed
+﻿/* ==========================================================================
+   DB.TS â€” SQLite Connection, Schema & Auto-Seed
    Menggunakan better-sqlite3 (sinkronus, cocok untuk Next.js Server Components)
    ========================================================================== */
 
@@ -9,7 +9,7 @@ import fs from 'fs';
 import os from 'os';
 import { BUSINESS_DUMMY_DATA, HERO_SLIDES_DUMMY_DATA, TESTIMONIALS_DUMMY_DATA, CASE_STUDIES_DUMMY_DATA, LEADERSHIP_THOUGHTS_DUMMY_DATA } from './dummy';
 
-/* ── Resolve database path ── */
+/* â”€â”€ Resolve database path â”€â”€ */
 const DB_DIR = path.join(process.cwd(), '.db');
 const SOURCE_DB_PATH = path.join(DB_DIR, 'arsalynt.db');
 const IS_VERCEL = Boolean(process.env.VERCEL);
@@ -46,7 +46,7 @@ function prepareRuntimeDatabase(): void {
   }
 }
 
-/* ── Inisialisasi koneksi singleton ── */
+/* â”€â”€ Inisialisasi koneksi singleton â”€â”€ */
 let _db: Database.Database | null = null;
 
 function getDb(): Database.Database {
@@ -66,7 +66,7 @@ function getDb(): Database.Database {
   return _db;
 }
 
-/* ── Schema ── */
+/* â”€â”€ Schema â”€â”€ */
 function initSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS businesses (
@@ -225,9 +225,12 @@ function initSchema(db: Database.Database): void {
   try { db.exec(`ALTER TABLE businesses ADD COLUMN services_bg TEXT;`); } catch {}
   try { db.exec(`ALTER TABLE businesses ADD COLUMN vision_img TEXT;`); } catch {}
   try { db.exec(`ALTER TABLE businesses ADD COLUMN cta_img TEXT;`); } catch {}
+  /* live_chat migration: whatsapp_message_id untuk deduplication */
+  try { db.exec(`ALTER TABLE live_chat_messages ADD COLUMN whatsapp_message_id TEXT;`); } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_lcm_wa_msg_id ON live_chat_messages(whatsapp_message_id) WHERE whatsapp_message_id IS NOT NULL;`); } catch {}
 }
 
-/* ── Auto-sync dari dummy.ts ke SQLite database ── */
+/* â”€â”€ Auto-sync dari dummy.ts ke SQLite database â”€â”€ */
 function seedIfEmpty(db: Database.Database): void {
   const insert = db.prepare(`
     INSERT OR REPLACE INTO businesses
