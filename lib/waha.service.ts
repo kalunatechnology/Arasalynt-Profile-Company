@@ -2,16 +2,22 @@ import { getDb } from '@/lib/db/db';
 
 export const WAHA_CONFIG = {
   get baseUrl() {
-    return (process.env.WAHA_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+    let url = (process.env.WAHA_BASE_URL || 'http://localhost:3000').trim();
+    // Bersihkan karakter accidental '=' di depan (misal salah paste: =https://...)
+    url = url.replace(/^=+/, '').trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = `https://${url}`;
+    }
+    return url.replace(/\/+$/, '');
   },
   get session() {
     return process.env.WAHA_SESSION || 'default';
   },
   get apiKey() {
-    return process.env.WAHA_API_KEY || process.env.GATEWAY_SECRET || '';
+    return (process.env.WAHA_API_KEY || process.env.GATEWAY_SECRET || '').trim();
   },
   get csPhone() {
-    return process.env.WHATSAPP_CS_PHONE || '6282252856710';
+    return (process.env.WHATSAPP_CS_PHONE || '6282252856710').trim();
   },
 };
 
@@ -55,7 +61,7 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -75,8 +81,12 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     }
 
     return res.ok;
-  } catch (err) {
-    console.warn('[WAHA] Failed to connect to WhatsApp Gateway:', err);
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      console.warn(`[WAHA] Timeout: WhatsApp Gateway (${url}) tidak merespon dalam 15 detik. Pastikan server gateway aktif.`);
+    } else {
+      console.warn('[WAHA] Failed to connect to WhatsApp Gateway:', err);
+    }
     return false;
   }
 }
