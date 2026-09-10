@@ -19,6 +19,10 @@ export const WAHA_CONFIG = {
   get csPhone() {
     return (process.env.WHATSAPP_CS_PHONE || '6282252856710').trim();
   },
+  get timeoutMs() {
+    const ms = parseInt(process.env.WAHA_TIMEOUT_MS || '', 10);
+    return !isNaN(ms) && ms > 0 ? ms : 15000;
+  },
 };
 
 export interface LiveChatMessageRecord {
@@ -50,6 +54,7 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
 
   const url = `${WAHA_CONFIG.baseUrl}/api/sendText`;
   const chatId = formatChatId(toPhone);
+  const timeoutLimit = WAHA_CONFIG.timeoutMs;
 
   try {
     const headers: Record<string, string> = {
@@ -61,7 +66,7 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), timeoutLimit);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -83,7 +88,7 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     return res.ok;
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
-      console.warn(`[WAHA] Timeout: WhatsApp Gateway (${url}) tidak merespon dalam 3 detik.`);
+      console.warn(`[WAHA] Timeout: WhatsApp Gateway (${url}) tidak merespon dalam ${Math.round(timeoutLimit / 1000)} detik.`);
     } else {
       console.warn('[WAHA] Failed to connect to WhatsApp Gateway:', err);
     }
