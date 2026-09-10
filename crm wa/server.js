@@ -6,6 +6,7 @@ const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const Database = require('better-sqlite3');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -136,6 +137,91 @@ async function getMessageFromStore(key) {
 }
 
 // ============================================================
+// LIVE CHAT SQLITE STORE
+// Menyimpan semua pesan live chat (user & CS) secara persisten di server ini.
+// Next.js Vercel akan poll endpoint /api/messages di server ini, bukan SQLite /tmp mereka sendiri.
+// ============================================================
+const LIVE_CHAT_DB_PATH = process.env.LIVE_CHAT_DB_PATH
+  ? path.resolve(process.env.LIVE_CHAT_DB_PATH)
+  : path.join(__dirname, 'live_chat.db');
+
+let _liveChatDb = null;
+function getLiveChatDb() {
+  if (_liveChatDb) return _liveChatDb;
+  _liveChatDb = new Database(LIVE_CHAT_DB_PATH);
+  _liveChatDb.pragma('journal_mode = WAL');
+  _liveChatDb.pragma('foreign_keys = ON');
+  _liveChatDb.exec(`
+    CREATE TABLE IF NOT EXISTS live_chat_sessions (
+      id          TEXT PRIMARY KEY,
+      last_message TEXT,
+      updated_at  TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS live_chat_messages (
+      id                 TEXT PRIMARY KEY,
+      session_id         TEXT NOT NULL,
+      sender             TEXT NOT NULL CHECK(sender IN ('user','human_cs')),
+      content            TEXT NOT NULL,
+      created_at         TEXT NOT NULL,
+      wa_message_id      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_lcm_session ON live_chat_messages(session_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_lcm_wa_id   ON live_chat_messages(wa_message_id);
+  `);
+  console.log('[LiveChatDB] SQLite siap di: ' + LIVE_CHAT_DB_PATH);
+  return _liveChatDb;
+}
+
+/** Simpan pesan live chat ke SQLite (idempoten via wa_message_id) */
+function saveLiveChatMessage(sessionId, sender, content, waMessageId) {
+  if (!sessionId || !content) return null;
+  const db = getLiveChatDb();
+  // Dedup via wa_message_id
+  if (waMessageId) {
+    const existing = db.prepare('SELECT id FROM live_chat_messages WHERE wa_message_id = ? LIMIT 1').get(waMessageId);
+    if (existing) return existing;
+  }
+  const id = 'lcm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  const now = new Date().toISOString();
+  db.prepare(
+    'INSERT OR IGNORE INTO live_chat_sessions (id, last_message, updated_at) VALUES (?, ?, ?)'
+  ).run(sessionId, content.slice(0, 100), now);
+  db.prepare(
+    'UPDATE live_chat_sessions SET last_message = ?, updated_at = ? WHERE id = ?'
+  ).run(content.slice(0, 100), now, sessionId);
+  db.prepare(
+    'INSERT INTO live_chat_messages (id, session_id, sender, content, created_at, wa_message_id) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, sessionId, sender, content, now, waMessageId || null);
+  return { id, sessionId, sender, content, createdAt: now };
+}
+
+/** Ambil semua pesan untuk sessionId tertentu */
+function getLiveChatMessages(sessionId) {
+  const db = getLiveChatDb();
+  return db.prepare(
+    'SELECT id, session_id as sessionId, sender, content, created_at as createdAt FROM live_chat_messages WHERE session_id = ? ORDER BY created_at ASC'
+  ).all(sessionId);
+}
+
+/** Hapus pesan lebih dari 1 hari */
+function cleanOldLiveChatMessages() {
+  try {
+    const db = getLiveChatDb();
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const result = db.prepare('DELETE FROM live_chat_messages WHERE created_at < ?').run(cutoff);
+    db.prepare('DELETE FROM live_chat_sessions WHERE updated_at < ?').run(cutoff);
+    if (result.changes > 0) console.log('[LiveChatDB] Hapus ' + result.changes + ' pesan kadaluarsa.');
+  } catch (err) {
+    console.warn('[LiveChatDB] Cleanup error: ' + err.message);
+  }
+}
+
+// Jalankan cleanup saat startup dan setiap 6 jam
+getLiveChatDb();
+cleanOldLiveChatMessages();
+setInterval(cleanOldLiveChatMessages, 6 * 60 * 60 * 1000);
+
+// ============================================================
 // BAILEYS LAZY IMPORT
 // ============================================================
 let baileysModule = null;
@@ -197,8 +283,10 @@ restoreSessionFromEnv();
 // MIDDLEWARE
 // ============================================================
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  origin: process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map(function(o) { return o.trim(); })
+    : ['https://www.arsalynk.com', 'https://arsalynk.com'],
+  methods: ['GET','POST','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','x-gateway-secret','x-api-key'],
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -774,6 +862,10 @@ async function startWhatsAppBot() {
       let normFrom = jid ? jid.replace('@lid', '@s.whatsapp.net') : jid;
       if (normFrom && normFrom.indexOf(':') !== -1) normFrom = normFrom.replace(/:.*@/, '@');
 
+      // Simpan pesan CS ke SQLite Live Chat DB (sumber tunggal untuk polling Next.js)
+      const senderType = fromMe ? 'human_cs' : 'user';
+      saveLiveChatMessage(sessionId, senderType, messageText, msgId);
+
       pipelineCounters.successfullyProcessed++;
       forwardToWebhook({
         event: 'message',
@@ -954,6 +1046,64 @@ function cacheOutboundMessage(result) {
     storeMessage(result);
   }
 }
+
+// ============================================================
+// LIVE CHAT MESSAGE ENDPOINTS
+// Digunakan oleh Next.js (Vercel) untuk polling pesan secara real-time.
+// Karena Vercel Serverless memiliki /tmp yang terisolasi per-container,
+// semua pesan disimpan di sini (server stateful) dan Next.js poll ke sini.
+// ============================================================
+
+/**
+ * GET /api/messages?sessionId=guest_xxx
+ * Mengembalikan seluruh riwayat pesan untuk sesi tamu tertentu.
+ * Auth: x-gateway-secret (wajib jika GATEWAY_SECRET dikonfigurasi)
+ */
+app.get('/api/messages', requireGatewayAuth, function(req, res) {
+  const sessionId = req.query.sessionId;
+  if (!sessionId) {
+    return res.status(400).json({ error: 'sessionId parameter wajib diisi.' });
+  }
+  try {
+    const messages = getLiveChatMessages(sessionId);
+    return res.json({ success: true, data: messages });
+  } catch (err) {
+    addDiagLog('error', '[LiveChatDB] GET /api/messages error: ' + err.message);
+    return res.status(500).json({ error: 'Gagal mengambil pesan: ' + err.message });
+  }
+});
+
+/**
+ * POST /api/messages/user
+ * Menerima pesan dari pengunjung website (Next.js) dan menyimpannya ke SQLite.
+ * Dipanggil oleh Next.js route /api/whatsapp/send sebelum atau sesudah mengirim ke WA.
+ * Body: { sessionId, message, name? }
+ * Auth: x-gateway-secret (wajib jika GATEWAY_SECRET dikonfigurasi)
+ */
+app.post('/api/messages/user', requireGatewayAuth, function(req, res) {
+  const { sessionId, message } = req.body;
+  if (!sessionId || !message) {
+    return res.status(400).json({ error: 'sessionId dan message wajib diisi.' });
+  }
+  // Batasi panjang pesan untuk mencegah bloat SQLite
+  const MAX_MSG_LENGTH = 4000;
+  const trimmedMsg = String(message).slice(0, MAX_MSG_LENGTH);
+  if (!trimmedMsg.trim()) {
+    return res.status(400).json({ error: 'message tidak boleh kosong.' });
+  }
+  // Validasi sessionId (hanya karakter aman)
+  if (!/^guest_[a-zA-Z0-9_-]{4,64}$/.test(String(sessionId))) {
+    return res.status(400).json({ error: 'sessionId tidak valid.' });
+  }
+  try {
+    const saved = saveLiveChatMessage(String(sessionId), 'user', trimmedMsg, null);
+    addDiagLog('info', '[LiveChatDB] Pesan user disimpan: session=' + sessionId + ' text="' + trimmedMsg.slice(0, 50) + '"');
+    return res.json({ success: true, data: saved });
+  } catch (err) {
+    addDiagLog('error', '[LiveChatDB] POST /api/messages/user error: ' + err.message);
+    return res.status(500).json({ error: 'Gagal menyimpan pesan: ' + err.message });
+  }
+});
 
 app.post('/api/sendText', requireGatewayAuth, async function(req, res) {
   const chatId = req.body.chatId;
