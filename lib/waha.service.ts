@@ -80,12 +80,19 @@ export async function sendWahaMessage(toPhone: string, text: string): Promise<bo
     });
     clearTimeout(timeout);
 
+    const resData = await res.json().catch(() => null);
+
     if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.warn(`[WAHA] Gateway returned HTTP ${res.status}: ${errText}`);
+      const msg = resData?.error || resData?.message || JSON.stringify(resData);
+      console.warn(`[WAHA] Gateway returned HTTP ${res.status}: ${msg}`);
+      return false;
     }
 
-    return res.ok;
+    if (resData && resData.queued) {
+      console.info(`[WAHA] Pesan disimpan di antrean gateway (status: ${resData.status || 'offline'}). Akan terkirim setelah WhatsApp online.`);
+    }
+
+    return true;
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
       console.warn(`[WAHA] Timeout: WhatsApp Gateway (${url}) tidak merespon dalam ${Math.round(timeoutLimit / 1000)} detik.`);
