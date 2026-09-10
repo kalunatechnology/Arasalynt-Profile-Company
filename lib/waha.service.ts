@@ -159,12 +159,12 @@ export async function forwardGuestInquiryToWhatsApp(
 ): Promise<boolean> {
   const name = guestName || `Tamu Website (${sessionId.slice(-6)})`;
   const notificationText =
-    `ðŸ”” *[CHAT BARU DARI WEBSITE ARSALYNK]*\n\n` +
-    `ðŸ‘¤ *Pengirim:* ${name}\n` +
-    `ðŸ†” *Sesi:* #${sessionId}\n` +
-    `ðŸ’¬ *Pesan:* "${guestMessage}"\n\n` +
-    `â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€\n` +
-    `ðŸ‘‰ *Cara Membalas:* Cukup balas chat ini dengan awalan format:\n` +
+    `🔔 *[CHAT BARU DARI WEBSITE ARSALYNK]*\n\n` +
+    `👤 *Pengirim:* ${name}\n` +
+    `🆔 *Sesi:* #${sessionId}\n` +
+    `💬 *Pesan:* "${guestMessage}"\n\n` +
+    `──────────────────────\n` +
+    `👉 *Cara Membalas:* Cukup balas chat ini dengan awalan format:\n` +
     `*[#${sessionId}] Balasan anda...*\n\n` +
     `_Balasan Anda akan langsung muncul di layar obrolan website pengunjung secara otomatis._`;
 

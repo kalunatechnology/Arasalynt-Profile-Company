@@ -172,6 +172,16 @@ function getLiveChatDb() {
   return _liveChatDb;
 }
 
+/** Bersihkan tag sesi dari pesan balasan CS (misal [#guest_xxx] atau #guest_xxx) */
+function stripSessionTag(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/^\[#guest_[a-zA-Z0-9_-]+\]\s*/i, '')
+    .replace(/^#guest_[a-zA-Z0-9_-]+\s*/i, '')
+    .replace(/\[#guest_[a-zA-Z0-9_-]+\]/gi, '')
+    .trim();
+}
+
 /** Simpan pesan live chat ke SQLite (idempoten via wa_message_id) */
 function saveLiveChatMessage(sessionId, sender, content, waMessageId) {
   if (!sessionId || !content) return null;
@@ -195,12 +205,22 @@ function saveLiveChatMessage(sessionId, sender, content, waMessageId) {
   return { id, sessionId, sender, content, createdAt: now };
 }
 
-/** Ambil semua pesan untuk sessionId tertentu */
+/** Ambil semua pesan untuk sessionId tertentu (menjamin normalisasi sender dan pembersihan tag sesi) */
 function getLiveChatMessages(sessionId) {
   const db = getLiveChatDb();
-  return db.prepare(
+  const rows = db.prepare(
     'SELECT id, session_id as sessionId, sender, content, created_at as createdAt FROM live_chat_messages WHERE session_id = ? ORDER BY created_at ASC'
   ).all(sessionId);
+  return rows.map(function(r) {
+    const isCs = r.sender === 'human_cs' || (typeof r.content === 'string' && r.content.indexOf('#guest_') !== -1);
+    return {
+      id: r.id,
+      sessionId: r.sessionId,
+      sender: isCs ? 'human_cs' : r.sender,
+      content: isCs ? (stripSessionTag(r.content) || r.content) : r.content,
+      createdAt: r.createdAt
+    };
+  });
 }
 
 /** Hapus pesan lebih dari 1 hari */
@@ -863,8 +883,10 @@ async function startWhatsAppBot() {
       if (normFrom && normFrom.indexOf(':') !== -1) normFrom = normFrom.replace(/:.*@/, '@');
 
       // Simpan pesan CS ke SQLite Live Chat DB (sumber tunggal untuk polling Next.js)
-      const senderType = fromMe ? 'human_cs' : 'user';
-      saveLiveChatMessage(sessionId, senderType, messageText, msgId);
+      // Setiap pesan inbound dari WhatsApp dengan session ID tamu adalah balasan dari Human CS
+      const cleanCsText = stripSessionTag(messageText) || messageText;
+      saveLiveChatMessage(sessionId, 'human_cs', cleanCsText, msgId);
+      addDiagLog('info', '[LiveChatDB] Balasan CS disimpan: session=' + sessionId + ' text="' + cleanCsText.slice(0, 50) + '"');
 
       pipelineCounters.successfullyProcessed++;
       forwardToWebhook({
