@@ -1,10 +1,4 @@
-> [!WARNING]
-> **Deprecated mirror — do not deploy this folder to production.**
-> The canonical WhatsApp runtime is now `kalunatechnology/wa_api`.
-> This folder remains only as historical/reference material while migration is completed.
-> Runtime databases, WhatsApp session bundles, and auth credentials must never be committed here.
-
-# Arsalynk WhatsApp Gateway
+# Arsalynk WhatsApp Gatewaya
 
 > **Live 2-Way Chat Sync • Baileys Socket Engine • Serverless & Container Ready**
 
@@ -149,3 +143,18 @@ npm run dev
 
 ## 📄 Lisensi
 Hak Cipta © 2026 Arsalynt. Dikembangkan untuk integrasi WhatsApp Business yang tangguh dan fleksibel
+
+
+## Reliable Website ↔ Gateway Contract
+
+The production gateway is the single source of truth for WhatsApp live-chat persistence.
+
+| Method | Endpoint | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/ready` | Readiness (DB + WhatsApp session + circuit breaker) | Public |
+| `GET` | `/api/messages?sessionId=...` | Persistent website live-chat history | `x-gateway-secret` |
+| `POST` | `/api/whatsapp/handoff` | Durable customer-to-CS handoff via transactional outbox | `x-gateway-secret` |
+| `POST` | `/api/sendText` | Low-level WhatsApp text send | `x-gateway-secret` |
+
+Production requires MySQL/MariaDB configuration through `DB_HOST`, `DB_USER`, and `DB_NAME`.
+The service intentionally refuses to fall back to local SQLite in production so a deployment cannot silently lose live-chat state.

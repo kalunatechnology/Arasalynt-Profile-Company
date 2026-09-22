@@ -37,7 +37,7 @@ async function createConversation({ sessionId, guestName, initialRoute = 'GENERA
     [id, shortCode, sessionId || null, guestName || null, initialRoute, priority, now, now]
   );
 
-  return { id, shortCode, sessionId, guestName, status: 'WAITING_HUMAN', logicalRoute: initialRoute, priority, createdAt: now };
+  return await findById(id);
 }
 
 async function updateConversationRoute(id, { logicalRoute, priority, aiSummary }) {
