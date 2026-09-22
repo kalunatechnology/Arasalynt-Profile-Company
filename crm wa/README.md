@@ -1,3 +1,9 @@
+> [!WARNING]
+> **Deprecated mirror — do not deploy this folder to production.**
+> The canonical WhatsApp runtime is now `kalunatechnology/wa_api`.
+> This folder remains only as historical/reference material while migration is completed.
+> Runtime databases, WhatsApp session bundles, and auth credentials must never be committed here.
+
 # Arsalynk WhatsApp Gateway
 
 > **Live 2-Way Chat Sync • Baileys Socket Engine • Serverless & Container Ready**

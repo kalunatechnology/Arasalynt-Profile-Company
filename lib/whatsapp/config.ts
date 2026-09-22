@@ -1,22 +1,31 @@
 /**
- * WhatsApp Reliability Architecture Configuration (Next.js Layer)
- * 
- * SENDER:              085904403535 (6285904403535)
- * TESTING DESTINATION: 087862766846 (6287862766846)
+ * Canonical WhatsApp Gateway configuration for the Next.js layer.
+ * Secrets and production URLs must come from environment variables.
  */
+function normalizeBaseUrl(raw: string): string {
+  let url = raw.trim().replace(/^=+/, '').trim();
+  if (!url) return '';
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `https://${url}`;
+  }
+  return url.replace(/\/+$/, '');
+}
 
 export const WA_CONFIG = {
   get baseUrl(): string {
-    let url = (process.env.WAHA_BASE_URL || process.env.WHATSAPP_BACKEND_URL || 'https://green-wallaby-885391.hostingersite.com').trim();
-    url = url.replace(/^=+/, '').trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = `https://${url}`;
-    }
-    return url.replace(/\/+$/, '');
+    return normalizeBaseUrl(
+      process.env.WAHA_BASE_URL ||
+      process.env.WHATSAPP_BACKEND_URL ||
+      ''
+    );
   },
 
   get secret(): string {
-    return (process.env.GATEWAY_SECRET || process.env.WAHA_API_KEY || 'arsalynt_wa_secret_prod_2026_secure').trim();
+    return (process.env.GATEWAY_SECRET || process.env.WAHA_API_KEY || '').trim();
+  },
+
+  get configured(): boolean {
+    return Boolean(this.baseUrl && this.secret);
   },
 
   get senderPhone(): string {
@@ -25,6 +34,10 @@ export const WA_CONFIG = {
 
   get testDestinationPhone(): string {
     return '6287862766846';
+  },
+
+  get csPhone(): string {
+    return (process.env.WHATSAPP_CS_PHONE || this.testDestinationPhone).trim();
   },
 
   get timeoutMs(): number {

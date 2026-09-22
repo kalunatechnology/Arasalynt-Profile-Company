@@ -9,11 +9,19 @@ export const dynamic = 'force-dynamic';
  * Proxies /ready from Hostinger WhatsApp Backend.
  */
 export async function GET() {
+  if (!WA_CONFIG.baseUrl) {
+    return NextResponse.json(
+      { ready: false, error: 'WhatsApp Gateway URL is not configured' },
+      { status: 503 }
+    );
+  }
+
   try {
+    const headers: Record<string, string> = {};
+    if (WA_CONFIG.secret) headers['x-gateway-secret'] = WA_CONFIG.secret;
+
     const res = await fetch(`${WA_CONFIG.baseUrl}/ready`, {
-      headers: {
-        'x-gateway-secret': WA_CONFIG.secret,
-      },
+      headers,
       next: { revalidate: 0 },
     });
 

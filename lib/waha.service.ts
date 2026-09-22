@@ -1,27 +1,21 @@
 import { getDb } from '@/lib/db/db';
+import { WA_CONFIG } from '@/lib/whatsapp/config';
 
 export const WAHA_CONFIG = {
   get baseUrl() {
-    let url = (process.env.WAHA_BASE_URL || 'http://localhost:3000').trim();
-    // Bersihkan karakter accidental '=' di depan (misal salah paste: =https://...)
-    url = url.replace(/^=+/, '').trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = `https://${url}`;
-    }
-    return url.replace(/\/+$/, '');
+    return WA_CONFIG.baseUrl;
   },
   get session() {
     return process.env.WAHA_SESSION || 'default';
   },
   get apiKey() {
-    return (process.env.WAHA_API_KEY || process.env.GATEWAY_SECRET || '').trim();
+    return WA_CONFIG.secret;
   },
   get csPhone() {
-    return (process.env.WHATSAPP_CS_PHONE || '6287862766846').trim();
+    return WA_CONFIG.csPhone;
   },
   get timeoutMs() {
-    const ms = parseInt(process.env.WAHA_TIMEOUT_MS || '', 10);
-    return !isNaN(ms) && ms > 0 ? ms : 15000;
+    return WA_CONFIG.timeoutMs;
   },
 };
 
@@ -46,9 +40,8 @@ export function formatChatId(phone: string): string {
  * Send WhatsApp text message via WAHA HTTP API / Baileys Gateway
  */
 export async function sendWahaMessage(toPhone: string, text: string): Promise<boolean> {
-  // If WAHA is pointing to default Next.js port 3000 without dedicated WAHA container, avoid spamming 404s
-  if (!process.env.WAHA_BASE_URL && WAHA_CONFIG.baseUrl.includes(':3000')) {
-    console.warn('[WAHA] Pengiriman dibatalkan: WAHA_BASE_URL belum dikonfigurasi di .env.');
+  if (!WA_CONFIG.configured) {
+    console.warn('[WAHA] Pengiriman dibatalkan: konfigurasi gateway belum lengkap.');
     return false;
   }
 

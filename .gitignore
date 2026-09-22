@@ -41,3 +41,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+
+
+# WhatsApp gateway runtime artifacts are never source code
+/crm wa/session_bundle.txt
+/crm wa/*.db
+/crm wa/*.db-shm
+/crm wa/*.db-wal
+/crm wa/auth_info_baileys/
+/crm wa/chatbot_conversations.json

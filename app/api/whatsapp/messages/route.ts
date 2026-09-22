@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { WAHA_CONFIG } from '@/lib/waha.service';
+import { WA_CONFIG } from '@/lib/whatsapp/config';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,19 +25,26 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const gatewayUrl = `${WAHA_CONFIG.baseUrl}/api/messages?sessionId=${encodeURIComponent(sessionId)}`;
+  if (!WA_CONFIG.configured) {
+    return NextResponse.json(
+      { success: false, error: 'WhatsApp Gateway is not configured', data: [] },
+      { status: 503 }
+    );
+  }
+
+  const gatewayUrl = `${WA_CONFIG.baseUrl}/api/messages?sessionId=${encodeURIComponent(sessionId)}`;
 
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
-    if (WAHA_CONFIG.apiKey) {
-      headers['x-gateway-secret'] = WAHA_CONFIG.apiKey;
-      headers['X-Api-Key'] = WAHA_CONFIG.apiKey;
+    if (WA_CONFIG.secret) {
+      headers['x-gateway-secret'] = WA_CONFIG.secret;
+      headers['X-Api-Key'] = WA_CONFIG.secret;
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), WAHA_CONFIG.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), WA_CONFIG.timeoutMs);
 
     const res = await fetch(gatewayUrl, {
       method: 'GET',
@@ -50,8 +57,8 @@ export async function GET(req: NextRequest) {
       const errText = await res.text().catch(() => '');
       console.warn(`[Messages] Gateway returned HTTP ${res.status}: ${errText}`);
       return NextResponse.json(
-        { error: `Gateway error: ${res.status}`, data: [] },
-        { status: res.status }
+        { success: false, error: `Gateway error: ${res.status}`, upstreamStatus: res.status, data: [] },
+        { status: 502 }
       );
     }
 

@@ -25,6 +25,16 @@ export async function requestHumanHandoff(payload: HandoffPayload): Promise<Hand
   const idempotencyKey = `waout_${requestId}`;
   const timestamp = Date.now().toString();
 
+  if (!WA_CONFIG.configured) {
+    return {
+      accepted: false,
+      requestId,
+      conversationCode: '',
+      status: 'CONFIG_ERROR',
+      error: 'WhatsApp Gateway belum dikonfigurasi dengan aman.',
+    };
+  }
+
   const url = `${WA_CONFIG.baseUrl}/api/whatsapp/handoff`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), WA_CONFIG.timeoutMs);

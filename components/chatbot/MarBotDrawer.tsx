@@ -310,21 +310,36 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // 2-Way WhatsApp Polling: Active ONLY when chatMode === 'human_cs'
+  // 2-Way WhatsApp Polling: Active ONLY when chatMode === 'human_cs'.
+  // Healthy state polls every 3s; failures back off up to 30s to avoid log/request storms.
   useEffect(() => {
     if (!isOpen || !sessionId || chatMode !== 'human_cs') return;
 
     let isPolling = true;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let nextDelayMs = 3000;
+
+    const scheduleNext = () => {
+      if (!isPolling) return;
+      pollTimer = setTimeout(pollLiveMessages, nextDelayMs);
+    };
 
     const pollLiveMessages = async () => {
+      let healthy = false;
       try {
         const res = await fetch(`/api/whatsapp/messages?sessionId=${sessionId}&_t=${Date.now()}`, {
           cache: 'no-store',
         });
-        if (!res.ok || !isPolling) return;
+
+        if (!res.ok) {
+          throw new Error(`WhatsApp polling HTTP ${res.status}`);
+        }
+        if (!isPolling) return;
+
         const data = await res.json();
+        healthy = true;
+
         if (data?.data && Array.isArray(data.data)) {
-          // Take all messages from human_cs for this session (dedup handled via existingIds)
           const csRecords = data.data.filter(
             (m: { sender: string }) => m.sender === 'human_cs'
           );
@@ -345,23 +360,22 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
               }
             }
 
-            if (newCsMessages.length > 0) {
-              return [...prev, ...newCsMessages];
-            }
-            return prev;
+            return newCsMessages.length > 0 ? [...prev, ...newCsMessages] : prev;
           });
         }
-      } catch {
-        // non-blocking
+      } catch (err) {
+        console.warn('[WhatsApp Polling]', err);
+      } finally {
+        nextDelayMs = healthy ? 3000 : Math.min(nextDelayMs * 2, 30000);
+        scheduleNext();
       }
     };
 
     pollLiveMessages();
-    const interval = setInterval(pollLiveMessages, 3000);
 
     return () => {
       isPolling = false;
-      clearInterval(interval);
+      if (pollTimer) clearTimeout(pollTimer);
     };
   }, [isOpen, sessionId, chatMode]);
 
@@ -393,59 +407,77 @@ export default function MarBotDrawer({ isOpen, onClose }: MarBotDrawerProps) {
       timestamp: formatCurrentTime(),
     };
 
-    // Auto-Switching Check: If user asks for CS / pricing / quotation in AI mode
+    // Auto-Switching Check: only enter Human CS mode after durable handoff is accepted.
     if (chatMode === 'ai' && isEscalationKeyword(messageContent)) {
-      setChatMode('human_cs');
       setInputValue('');
-      sessionStartTimeRef.current = Date.now();
 
-      let activeCode = shortCode;
       try {
         const handoffRes = await fetch('/api/whatsapp/handoff', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId,
-            message: messageContent,
-          }),
+          body: JSON.stringify({ sessionId, message: messageContent }),
         });
         const data = await handoffRes.json().catch(() => null);
-        if (data?.conversationCode) {
-          activeCode = data.conversationCode;
-          setShortCode(data.conversationCode);
+
+        if (!handoffRes.ok || !data?.accepted) {
+          throw new Error(data?.error || `Handoff HTTP ${handoffRes.status}`);
         }
+
+        const activeCode = data?.conversationCode || shortCode;
+        if (activeCode) setShortCode(activeCode);
+
+        setChatMode('human_cs');
+        sessionStartTimeRef.current = Date.now();
+
+        const ticketTag = activeCode ? ` (Kode Tiket: **#${activeCode}**)` : '';
+        const autoHandoverMessage: ChatMessage = {
+          id: `bot-handover-${Date.now()}`,
+          role: 'assistant',
+          content: `Pertanyaan Anda telah diteruskan kepada tim Customer Service kami${ticketTag}. Anda kini terhubung langsung dengan representatif kami dan dapat melanjutkan obrolan di sini.`,
+          timestamp: formatCurrentTime(),
+        };
+        setMessages((prev) => [...prev, userMessage, autoHandoverMessage]);
       } catch (err) {
         console.warn('[WhatsApp Handoff Error]', err);
+        const failureMessage: ChatMessage = {
+          id: `bot-handover-error-${Date.now()}`,
+          role: 'assistant',
+          content: 'Koneksi ke Customer Service WhatsApp sedang belum siap, sehingga pesan Anda belum diteruskan. Silakan coba kembali beberapa saat lagi.',
+          timestamp: formatCurrentTime(),
+          isError: true,
+        };
+        setMessages((prev) => [...prev, userMessage, failureMessage]);
       }
-
-      const ticketTag = activeCode ? ` (Kode Tiket: **#${activeCode}**)` : '';
-      const autoHandoverMessage: ChatMessage = {
-        id: `bot-handover-${Date.now()}`,
-        role: 'assistant',
-        content: `Pertanyaan Anda telah diteruskan kepada tim Customer Service kami${ticketTag}. Anda kini terhubung langsung dengan representatif kami dan dapat melanjutkan obrolan di sini.`,
-        timestamp: formatCurrentTime(),
-      };
-
-      setMessages((prev) => [...prev, userMessage, autoHandoverMessage]);
       return;
     }
 
-    // When already in Human CS mode: Send message directly to WhatsApp CS
+    // When already in Human CS mode, each message must be durably accepted by the gateway.
     if (chatMode === 'human_cs') {
       setMessages((prev) => [...prev, userMessage]);
       setInputValue('');
 
       try {
-        await fetch('/api/whatsapp/handoff', {
+        const handoffRes = await fetch('/api/whatsapp/handoff', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId,
-            message: messageContent,
-          }),
+          body: JSON.stringify({ sessionId, message: messageContent }),
         });
+        const data = await handoffRes.json().catch(() => null);
+        if (!handoffRes.ok || !data?.accepted) {
+          throw new Error(data?.error || `Handoff HTTP ${handoffRes.status}`);
+        }
       } catch (err) {
         console.warn('[WhatsApp CS Send Error]', err);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `cs-send-error-${Date.now()}`,
+            role: 'assistant',
+            content: 'Pesan terakhir belum berhasil masuk ke antrean Customer Service. Silakan kirim ulang.',
+            timestamp: formatCurrentTime(),
+            isError: true,
+          },
+        ]);
       }
       return;
     }

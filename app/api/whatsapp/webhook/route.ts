@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { WAHA_CONFIG } from '@/lib/waha.service';
+import { WA_CONFIG } from '@/lib/whatsapp/config';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
  */
 
 const WEBHOOK_SECRET =
-  process.env.GATEWAY_WEBHOOK_SECRET || process.env.WAHA_API_KEY || '';
+  process.env.GATEWAY_WEBHOOK_SECRET || WA_CONFIG.secret;
 
 export async function POST(req: NextRequest) {
   const requestId = Math.random().toString(36).slice(2, 8);
