@@ -2,10 +2,10 @@
   "name": "arsalynk-whatsapp-gateway",
   "version": "1.0.0",
   "description": "Standalone WhatsApp Baileys Gateway for Arsalynk 2-Way Live Chat",
-  "main": "server.js",
+  "main": "hostinger-entry.js",
   "scripts": {
-    "start": "node bootstrap.js",
-    "dev": "node --watch bootstrap.js",
+    "start": "node hostinger-entry.js",
+    "dev": "node --watch hostinger-entry.js",
     "build": "echo 'No build required for Node.js Express Gateway'"
   },
   "dependencies": {
