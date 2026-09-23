@@ -28,6 +28,34 @@ export interface LiveChatMessageRecord {
 }
 
 /**
+ * Remove the internal website-session marker from customer-facing CS messages.
+ *
+ * The marker remains part of the WhatsApp routing contract, for example:
+ *   [#guest_xxx] Halo kak
+ * but the website only displays:
+ *   Halo kak
+ */
+function stripWebsiteSessionTag(text: string): string {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+
+  return raw
+    // [#guest_xxx], *[#guest_xxx]*, optionally followed by ':'
+    .replace(/^\s*\*?\[#\s*guest_[a-zA-Z0-9_-]+\]\*?\s*:?[\s]*/i, '')
+    // #guest_xxx, *#guest_xxx*, optionally followed by ':'
+    .replace(/^\s*\*?#\s*guest_[a-zA-Z0-9_-]+\*?\s*:?[\s]*/i, '')
+    .trim();
+}
+
+function normalizeLiveChatContent(
+  sender: 'user' | 'bot' | 'human_cs',
+  content: string
+): string {
+  if (sender !== 'human_cs') return String(content || '');
+  return stripWebsiteSessionTag(content) || String(content || '').trim();
+}
+
+/**
  * Format standard Indonesian/International phone to WAHA chatId (e.g. 628213939569@c.us)
  */
 export function formatChatId(phone: string): string {
@@ -108,25 +136,29 @@ export function recordLiveChatMessage(
   const db = getDb();
   const id = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = new Date().toISOString();
+  const displayContent = normalizeLiveChatContent(sender, content);
 
-  // Pastikan session ada
+  // Pastikan session ada. Internal routing markers are intentionally not stored
+  // in the customer-facing history for human CS messages.
   db.prepare(
     `INSERT INTO live_chat_sessions (id, last_message, updated_at)
      VALUES (?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET last_message = excluded.last_message, updated_at = excluded.updated_at`
-  ).run(sessionId, content, now);
+  ).run(sessionId, displayContent, now);
 
   // Simpan pesan dengan whatsapp_message_id untuk deduplication
   db.prepare(
     `INSERT INTO live_chat_messages (id, session_id, sender, content, created_at, whatsapp_message_id)
      VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, sessionId, sender, content, now, whatsappMessageId || null);
+  ).run(id, sessionId, sender, displayContent, now, whatsappMessageId || null);
 
-  return { id, sessionId, sender, content, createdAt: now };
+  return { id, sessionId, sender, content: displayContent, createdAt: now };
 }
 
 /**
- * Get message history for a specific guest session
+ * Get message history for a specific guest session.
+ * Existing historical rows are normalized on read so older messages that still
+ * contain [#guest_xxx] are immediately rendered cleanly without a DB migration.
  */
 export function getLiveChatMessages(sessionId: string): LiveChatMessageRecord[] {
   const db = getDb();
@@ -139,7 +171,10 @@ export function getLiveChatMessages(sessionId: string): LiveChatMessageRecord[] 
     )
     .all(sessionId) as LiveChatMessageRecord[];
 
-  return rows;
+  return rows.map((row) => ({
+    ...row,
+    content: normalizeLiveChatContent(row.sender, row.content),
+  }));
 }
 
 /**
