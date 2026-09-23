@@ -7,9 +7,9 @@ export const dynamic = 'force-dynamic';
 /**
  * POST /api/whatsapp/handoff
  *
- * Compatibility layer for the stable legacy WhatsApp gateway.
- * The gateway keeps using /api/sendText; this route preserves the website API
- * expected by MarBot while delegating to the legacy-safe send flow.
+ * Provider-aware compatibility layer used by MarBot.
+ * - BAYPASS=true  -> crm wa / Baileys
+ * - BAYPASS=false -> Meta WhatsApp Cloud API direct text
  */
 export async function POST(req: NextRequest) {
   try {
@@ -36,11 +36,30 @@ export async function POST(req: NextRequest) {
       } catch (storageError) {
         console.warn('[Handoff] Message sent but local history write failed:', storageError);
       }
+
+      console.info(
+        `[Handoff] accepted provider=${result.provider || '-'} requestId=${result.requestId} session=${sessionId}`
+      );
+
+      return NextResponse.json(result, { status: 202 });
     }
 
-    return NextResponse.json(result, { status: result.accepted ? 202 : 502 });
+    // The 502 here means the selected WhatsApp provider rejected/failed the
+    // outbound request; it does NOT mean the Vercel function crashed.
+    console.error(
+      `[Handoff] upstream failure provider=${result.provider || '-'} requestId=${result.requestId} status=${result.status} error=${result.error || 'unknown'}`
+    );
+
+    return NextResponse.json(
+      {
+        ...result,
+        upstreamFailure: true,
+      },
+      { status: 502 }
+    );
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error('[Handoff] route exception:', errorMsg);
     return NextResponse.json(
       { error: `Handoff error: ${errorMsg}` },
       { status: 500 }
