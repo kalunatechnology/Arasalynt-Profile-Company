@@ -7,30 +7,85 @@ export const dynamic = 'force-dynamic';
  * GET /api/whatsapp/status
  *
  * BAYPASS=true  -> proxy stable crm wa /api/status
- * BAYPASS=false -> report Meta Cloud API configuration readiness
+ * BAYPASS=false -> validate the configured Meta Cloud phone/token directly
  */
 export async function GET() {
   if (!WA_CONFIG.baypass) {
-    if (!WA_CONFIG.cloudConfigured) {
+    if (!WA_CONFIG.cloudConfigured || !WA_CONFIG.cloudPhoneInfoUrl) {
       return NextResponse.json(
         {
           ready: false,
           status: 'config_error',
           provider: 'meta_cloud',
-          error: 'Meta WhatsApp Cloud API belum dikonfigurasi lengkap',
+          error:
+            'Meta Cloud belum lengkap. Pastikan PHONE_NUMBER_ID, ACCESS_TOKEN, dan WHATSAPP_CLOUD_CS_PHONE terisi.',
         },
         { status: 503 }
       );
     }
 
-    return NextResponse.json({
-      ready: true,
-      status: 'connected',
-      provider: 'meta_cloud',
-      mode: 'cloud_api',
-      phoneNumberId: WA_CONFIG.cloudPhoneNumberId,
-      webhookConfigured: Boolean(WA_CONFIG.cloudVerifyToken),
-    });
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), WA_CONFIG.timeoutMs);
+
+      const res = await fetch(WA_CONFIG.cloudPhoneInfoUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${WA_CONFIG.cloudAccessToken}`,
+        },
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      clearTimeout(timeout);
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const metaError =
+          data?.error?.message ||
+          data?.error?.error_user_msg ||
+          `Meta Graph API HTTP ${res.status}`;
+
+        return NextResponse.json(
+          {
+            ready: false,
+            status: 'meta_api_error',
+            provider: 'meta_cloud',
+            error: metaError,
+          },
+          { status: 502 }
+        );
+      }
+
+      return NextResponse.json({
+        ready: true,
+        status: 'connected',
+        provider: 'meta_cloud',
+        mode: 'direct_text',
+        phoneNumberId: data?.id || WA_CONFIG.cloudPhoneNumberId,
+        displayPhoneNumber: data?.display_phone_number || null,
+        verifiedName: data?.verified_name || null,
+        destinationPhone: WA_CONFIG.cloudCsPhone,
+        webhookConfigured: Boolean(WA_CONFIG.cloudVerifyToken),
+      });
+    } catch (err: unknown) {
+      const isTimeout = err instanceof Error && err.name === 'AbortError';
+      const msg = isTimeout
+        ? `Meta Graph API timeout (${WA_CONFIG.timeoutMs}ms)`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+
+      return NextResponse.json(
+        {
+          ready: false,
+          status: 'unreachable',
+          provider: 'meta_cloud',
+          error: msg,
+        },
+        { status: 503 }
+      );
+    }
   }
 
   if (!WA_CONFIG.baseUrl) {
@@ -84,7 +139,9 @@ export async function GET() {
     const isTimeout = err instanceof Error && err.name === 'AbortError';
     const msg = isTimeout
       ? `Gateway timeout (${WA_CONFIG.timeoutMs}ms)`
-      : (err instanceof Error ? err.message : String(err));
+      : err instanceof Error
+        ? err.message
+        : String(err);
 
     return NextResponse.json(
       { ready: false, status: 'unreachable', provider: 'crm_wa', error: msg },
