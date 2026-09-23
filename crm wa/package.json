@@ -2,10 +2,10 @@
   "name": "arsalynk-whatsapp-gateway",
   "version": "1.0.0",
   "description": "Standalone WhatsApp Baileys Gateway for Arsalynk 2-Way Live Chat",
-  "main": "server.js",
+  "main": "session-safe-entry.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node session-safe-entry.js",
+    "dev": "node --watch session-safe-entry.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
