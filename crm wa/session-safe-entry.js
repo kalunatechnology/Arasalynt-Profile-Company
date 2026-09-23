@@ -16,6 +16,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const SIGNAL_REPAIR_VERSION = '2026-09-bad-mac-v1';
+
 const isServerless = Boolean(
   process.env.VERCEL ||
   process.env.AWS_LAMBDA_FUNCTION_NAME ||
@@ -103,7 +105,7 @@ function purgePeerSignalCaches(authDir) {
 
   let removed = 0;
   for (const filename of fs.readdirSync(authDir)) {
-    // Preserve creds + app-state. Peer/session crypto will be negotiated again.
+    // Preserve creds.json + app-state. These files are peer crypto caches only.
     if (
       filename.startsWith('session-') ||
       filename.startsWith('pre-key-') ||
@@ -119,6 +121,29 @@ function purgePeerSignalCaches(authDir) {
     }
   }
   return removed;
+}
+
+function runOneTimeSignalRepair(authDir) {
+  const markerPath = path.join(authDir, '.signal-repair-version');
+  let currentMarker = '';
+  try {
+    if (fs.existsSync(markerPath)) {
+      currentMarker = fs.readFileSync(markerPath, 'utf8').trim();
+    }
+  } catch {}
+
+  if (currentMarker === SIGNAL_REPAIR_VERSION) return;
+
+  const removed = purgePeerSignalCaches(authDir);
+  try {
+    fs.writeFileSync(markerPath, SIGNAL_REPAIR_VERSION, 'utf8');
+  } catch (error) {
+    console.warn('[SessionSafe] Gagal menulis marker Signal repair:', error.message);
+  }
+
+  console.log(
+    `[SessionSafe] One-time Bad MAC repair selesai: ${removed} Signal peer cache dibersihkan; creds.json/login dipertahankan.`,
+  );
 }
 
 if (!isServerless) {
@@ -143,13 +168,10 @@ if (!isServerless) {
     }
   }
 
-  // A one-time cache purge is automatically performed only when credentials
-  // were just migrated. Existing stable deployments are never wiped on boot.
-  if (migrated > 0) {
-    const removed = purgePeerSignalCaches(persistentAuthDir);
-    console.log(
-      `[SessionSafe] Signal peer cache stale dibersihkan: ${removed} file (login tetap dipertahankan).`,
-    );
+  // Run exactly once for this repair version, even if AUTH_DIR was already set
+  // manually. This fixes stale peer sessions without touching the device login.
+  if (fs.existsSync(credsPath) || migrated > 0) {
+    runOneTimeSignalRepair(persistentAuthDir);
   }
 
   // On stateful Hostinger, an old WA_SESSION_BASE64 bundle must never overwrite
