@@ -27,6 +27,15 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
   return raw.trim().toLowerCase() === 'true';
 }
 
+function isValidInternationalPhone(raw: string): boolean {
+  const phone = normalizePhone(raw);
+  return /^\d{8,15}$/.test(phone);
+}
+
+function isValidPhoneNumberId(raw: string): boolean {
+  return /^\d{5,}$/.test(String(raw || '').trim());
+}
+
 export const WA_CONFIG = {
   /**
    * Keep legacy crm wa as the default so existing deployments do not change
@@ -90,15 +99,34 @@ export const WA_CONFIG = {
   },
 
   /**
+   * Human-readable validation used by API routes/logging. Never includes secret
+   * values, so it is safe to return to the website for diagnostics.
+   */
+  get cloudConfigError(): string {
+    if (!this.cloudPhoneNumberId) {
+      return 'WHATSAPP_CLOUD_PHONE_NUMBER_ID belum diisi.';
+    }
+    if (!isValidPhoneNumberId(this.cloudPhoneNumberId)) {
+      return 'WHATSAPP_CLOUD_PHONE_NUMBER_ID tidak valid; isi dengan Phone Number ID numerik dari Meta, bukan nomor telepon.';
+    }
+    if (!this.cloudAccessToken) {
+      return 'WHATSAPP_CLOUD_ACCESS_TOKEN belum diisi dengan Permanent Access Token Meta.';
+    }
+    if (!process.env.WHATSAPP_CLOUD_CS_PHONE?.trim()) {
+      return 'WHATSAPP_CLOUD_CS_PHONE belum diisi dengan nomor tujuan CS.';
+    }
+    if (!isValidInternationalPhone(this.cloudCsPhone)) {
+      return 'WHATSAPP_CLOUD_CS_PHONE tidak valid; gunakan nomor internasional hanya angka, contoh 628xxxxxxxxxx.';
+    }
+    return '';
+  },
+
+  /**
    * Meta mode is intentionally fail-closed. It must never silently fall back to
    * the legacy/test destination because BAYPASS=false means "Meta only".
    */
   get cloudConfigured(): boolean {
-    return Boolean(
-      this.cloudPhoneNumberId &&
-      this.cloudAccessToken &&
-      this.cloudCsPhone
-    );
+    return this.cloudConfigError === '';
   },
 
   get gatewayConfigured(): boolean {
