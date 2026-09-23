@@ -18,8 +18,8 @@ function extractWebsiteSessionId(text: string): string {
 function verifyMetaSignature(rawBody: string, signature: string | null): boolean {
   const appSecret = WA_CONFIG.cloudAppSecret;
 
-  // Signature verification is strongly recommended. Keep it optional during
-  // migration so Meta webhook setup can be completed before APP_SECRET is set.
+  // During initial webhook setup APP_SECRET may still be unset. Once it is set,
+  // every Meta POST must carry a valid x-hub-signature-256.
   if (!appSecret) return true;
   if (!signature || !signature.startsWith('sha256=')) return false;
 
@@ -81,7 +81,7 @@ async function handleMetaWebhook(
       const value = change?.value;
       if (!value) continue;
 
-      // Delivery/read/sent status callbacks do not create website messages.
+      // Delivery/read/sent callbacks are acknowledged but do not become chat rows.
       if (Array.isArray(value.statuses) && !Array.isArray(value.messages)) {
         ignored += value.statuses.length;
         continue;
@@ -96,8 +96,8 @@ async function handleMetaWebhook(
           continue;
         }
 
-        // Keep strict session routing. Human CS replies must include the same
-        // internal [#guest_xxx] marker used by the legacy gateway flow.
+        // Same routing contract as crm wa: CS keeps the [#guest_xxx] tag on
+        // WhatsApp, while recordLiveChatMessage strips it from the website UI.
         const sessionId = extractWebsiteSessionId(body);
         if (!sessionId) {
           console.warn(
@@ -199,9 +199,9 @@ async function handleLegacyGatewayWebhook(
 /**
  * POST /api/whatsapp/webhook
  *
- * Dual-provider inbound endpoint:
- * - crm wa legacy gateway payloads
- * - Meta WhatsApp Cloud API webhook payloads
+ * Provider is exclusive:
+ * - BAYPASS=false -> accept Meta WhatsApp Cloud API only
+ * - BAYPASS=true  -> accept crm wa gateway only
  */
 export async function POST(req: NextRequest) {
   const requestId = Math.random().toString(36).slice(2, 8);
@@ -221,7 +221,15 @@ export async function POST(req: NextRequest) {
 
     const isMetaWebhook = payload?.object === 'whatsapp_business_account';
 
-    if (isMetaWebhook) {
+    if (!WA_CONFIG.baypass) {
+      if (!isMetaWebhook) {
+        return NextResponse.json({
+          status: 'ignored',
+          provider: 'meta_cloud',
+          reason: 'crm wa webhook disabled while BAYPASS=false',
+        });
+      }
+
       const signature = req.headers.get('x-hub-signature-256');
       if (!verifyMetaSignature(rawBody, signature)) {
         console.warn('[MetaWebhook] Invalid x-hub-signature-256. reqId=' + requestId);
@@ -231,7 +239,14 @@ export async function POST(req: NextRequest) {
       return handleMetaWebhook(payload, requestId);
     }
 
-    // Legacy crm wa gateway uses the existing shared secret contract.
+    if (isMetaWebhook) {
+      return NextResponse.json({
+        status: 'ignored',
+        provider: 'crm_wa',
+        reason: 'Meta webhook disabled while BAYPASS=true',
+      });
+    }
+
     if (WEBHOOK_SECRET) {
       const incoming =
         req.headers.get('x-gateway-secret') ||
