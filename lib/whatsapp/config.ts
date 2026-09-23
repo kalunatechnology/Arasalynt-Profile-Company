@@ -3,7 +3,7 @@
  *
  * Provider switch:
  * - BAYPASS=true  -> existing Hostinger/Baileys crm wa gateway
- * - BAYPASS=false -> Meta WhatsApp Cloud API
+ * - BAYPASS=false -> Meta WhatsApp Cloud API (direct text only)
  *
  * NOTE: The environment variable is intentionally named BAYPASS to preserve
  * the deployment contract requested by the project.
@@ -75,13 +75,30 @@ export const WA_CONFIG = {
     return (process.env.WHATSAPP_CLOUD_APP_SECRET || '').trim();
   },
 
+  get cloudCsPhone(): string {
+    return normalizePhone(process.env.WHATSAPP_CLOUD_CS_PHONE || '');
+  },
+
   get cloudMessagesUrl(): string {
     if (!this.cloudPhoneNumberId) return '';
     return `https://graph.facebook.com/${this.cloudApiVersion}/${this.cloudPhoneNumberId}/messages`;
   },
 
+  get cloudPhoneInfoUrl(): string {
+    if (!this.cloudPhoneNumberId) return '';
+    return `https://graph.facebook.com/${this.cloudApiVersion}/${this.cloudPhoneNumberId}?fields=id,display_phone_number,verified_name`;
+  },
+
+  /**
+   * Meta mode is intentionally fail-closed. It must never silently fall back to
+   * the legacy/test destination because BAYPASS=false means "Meta only".
+   */
   get cloudConfigured(): boolean {
-    return Boolean(this.cloudPhoneNumberId && this.cloudAccessToken);
+    return Boolean(
+      this.cloudPhoneNumberId &&
+      this.cloudAccessToken &&
+      this.cloudCsPhone
+    );
   },
 
   get gatewayConfigured(): boolean {
@@ -101,14 +118,16 @@ export const WA_CONFIG = {
   },
 
   /**
-   * crm wa and Meta may target different CS numbers during migration.
-   * WHATSAPP_CLOUD_CS_PHONE wins only when Meta is active.
+   * BAYPASS=false: destination MUST come from WHATSAPP_CLOUD_CS_PHONE.
+   * BAYPASS=true : keep the legacy WHATSAPP_CS_PHONE/test fallback behavior.
    */
   get csPhone(): string {
-    const raw = !this.baypass
-      ? (process.env.WHATSAPP_CLOUD_CS_PHONE || process.env.WHATSAPP_CS_PHONE || this.testDestinationPhone)
-      : (process.env.WHATSAPP_CS_PHONE || this.testDestinationPhone);
-    return normalizePhone(raw);
+    if (!this.baypass) {
+      return this.cloudCsPhone;
+    }
+    return normalizePhone(
+      process.env.WHATSAPP_CS_PHONE || this.testDestinationPhone
+    );
   },
 
   get timeoutMs(): number {
