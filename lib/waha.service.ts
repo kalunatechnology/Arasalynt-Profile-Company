@@ -130,10 +130,9 @@ async function sendViaCrmWa(toPhone: string, text: string): Promise<boolean> {
 
 async function sendViaMetaCloud(toPhone: string, text: string): Promise<boolean> {
   if (!WA_CONFIG.cloudConfigured || !WA_CONFIG.cloudMessagesUrl) {
-    console.warn(
-      '[WhatsApp][meta_cloud] Pengiriman dibatalkan: WHATSAPP_CLOUD_PHONE_NUMBER_ID / WHATSAPP_CLOUD_ACCESS_TOKEN belum lengkap.'
-    );
-    return false;
+    const reason = WA_CONFIG.cloudConfigError || 'Meta WhatsApp Cloud API belum dikonfigurasi lengkap.';
+    console.warn(`[WhatsApp][meta_cloud] ${reason}`);
+    throw new Error(reason);
   }
 
   const timeoutLimit = WA_CONFIG.timeoutMs;
@@ -166,13 +165,17 @@ async function sendViaMetaCloud(toPhone: string, text: string): Promise<boolean>
     const data = await res.json().catch(() => null);
     if (!res.ok) {
       const metaMessage =
-        data?.error?.message ||
         data?.error?.error_user_msg ||
-        JSON.stringify(data);
-      console.warn(
-        `[WhatsApp][meta_cloud] Graph API HTTP ${res.status}: ${metaMessage}`
-      );
-      return false;
+        data?.error?.message ||
+        'Meta Graph API menolak request tanpa detail error.';
+      const metaCode = data?.error?.code ? ` code=${data.error.code}` : '';
+      const metaSubcode = data?.error?.error_subcode
+        ? ` subcode=${data.error.error_subcode}`
+        : '';
+      const errorMessage = `Meta Graph API HTTP ${res.status}:${metaCode}${metaSubcode} ${metaMessage}`.trim();
+
+      console.warn(`[WhatsApp][meta_cloud] ${errorMessage}`);
+      throw new Error(errorMessage);
     }
 
     console.info(
@@ -181,13 +184,14 @@ async function sendViaMetaCloud(toPhone: string, text: string): Promise<boolean>
     return true;
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
-      console.warn(
-        `[WhatsApp][meta_cloud] Timeout Graph API setelah ${Math.round(timeoutLimit / 1000)} detik.`
-      );
-    } else {
-      console.warn('[WhatsApp][meta_cloud] Gagal menghubungi Graph API:', err);
+      const timeoutError = `Meta Graph API timeout setelah ${Math.round(timeoutLimit / 1000)} detik.`;
+      console.warn(`[WhatsApp][meta_cloud] ${timeoutError}`);
+      throw new Error(timeoutError);
     }
-    return false;
+
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('[WhatsApp][meta_cloud] Gagal mengirim direct text:', message);
+    throw err instanceof Error ? err : new Error(message);
   }
 }
 
@@ -195,7 +199,7 @@ async function sendViaMetaCloud(toPhone: string, text: string): Promise<boolean>
  * Unified outbound WhatsApp sender.
  *
  * BAYPASS=true  -> crm wa / Baileys gateway
- * BAYPASS=false -> Meta WhatsApp Cloud API
+ * BAYPASS=false -> Meta WhatsApp Cloud API direct text
  */
 export async function sendWahaMessage(toPhone: string, text: string): Promise<boolean> {
   return WA_CONFIG.baypass
