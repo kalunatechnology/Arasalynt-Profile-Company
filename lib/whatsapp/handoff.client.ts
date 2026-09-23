@@ -1,4 +1,5 @@
 import { forwardGuestInquiryToWhatsApp } from '@/lib/waha.service';
+import { WA_CONFIG } from '@/lib/whatsapp/config';
 
 export interface HandoffPayload {
   sessionId: string;
@@ -12,16 +13,16 @@ export interface HandoffResponse {
   requestId: string;
   conversationCode: string;
   status: string;
+  provider?: 'crm_wa' | 'meta_cloud';
   isDuplicate?: boolean;
   error?: string;
 }
 
 /**
- * Compatibility handoff for the stable legacy Hostinger gateway.
+ * Provider-aware human handoff.
  *
- * The gateway runtime intentionally stays on the proven /api/sendText contract.
- * This client reuses forwardGuestInquiryToWhatsApp(), which formats the session
- * marker and sends it through /api/sendText without changing gateway startup.
+ * BAYPASS=true  -> stable crm wa /api/sendText
+ * BAYPASS=false -> Meta WhatsApp Cloud API direct text
  */
 export async function requestHumanHandoff(payload: HandoffPayload): Promise<HandoffResponse> {
   const requestId =
@@ -41,6 +42,7 @@ export async function requestHumanHandoff(payload: HandoffPayload): Promise<Hand
         requestId,
         conversationCode: payload.sessionId,
         status: 'SENT',
+        provider: WA_CONFIG.provider,
       };
     }
 
@@ -49,17 +51,22 @@ export async function requestHumanHandoff(payload: HandoffPayload): Promise<Hand
       requestId,
       conversationCode: '',
       status: 'FAILED',
-      error: 'WhatsApp Gateway menolak atau gagal mengirim handoff.',
+      provider: WA_CONFIG.provider,
+      error:
+        WA_CONFIG.provider === 'meta_cloud'
+          ? 'Meta WhatsApp Cloud API tidak menerima pesan.'
+          : 'WhatsApp Gateway menolak atau gagal mengirim handoff.',
     };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[HandoffClient] Legacy gateway handoff failed:', msg);
+    console.warn(`[HandoffClient][${WA_CONFIG.provider}] handoff failed:`, msg);
 
     return {
       accepted: false,
       requestId,
       conversationCode: '',
       status: 'FAILED',
+      provider: WA_CONFIG.provider,
       error: msg,
     };
   }
