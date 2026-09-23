@@ -6,12 +6,41 @@ export const dynamic = 'force-dynamic';
 /**
  * GET /api/whatsapp/status
  *
- * Legacy-compatible proxy to the stable gateway /api/status endpoint.
+ * BAYPASS=true  -> proxy stable crm wa /api/status
+ * BAYPASS=false -> report Meta Cloud API configuration readiness
  */
 export async function GET() {
+  if (!WA_CONFIG.baypass) {
+    if (!WA_CONFIG.cloudConfigured) {
+      return NextResponse.json(
+        {
+          ready: false,
+          status: 'config_error',
+          provider: 'meta_cloud',
+          error: 'Meta WhatsApp Cloud API belum dikonfigurasi lengkap',
+        },
+        { status: 503 }
+      );
+    }
+
+    return NextResponse.json({
+      ready: true,
+      status: 'connected',
+      provider: 'meta_cloud',
+      mode: 'cloud_api',
+      phoneNumberId: WA_CONFIG.cloudPhoneNumberId,
+      webhookConfigured: Boolean(WA_CONFIG.cloudVerifyToken),
+    });
+  }
+
   if (!WA_CONFIG.baseUrl) {
     return NextResponse.json(
-      { ready: false, status: 'config_error', error: 'WhatsApp Gateway URL is not configured' },
+      {
+        ready: false,
+        status: 'config_error',
+        provider: 'crm_wa',
+        error: 'WhatsApp Gateway URL is not configured',
+      },
       { status: 503 }
     );
   }
@@ -39,6 +68,7 @@ export async function GET() {
         {
           ready: false,
           status: data?.status || 'gateway_error',
+          provider: 'crm_wa',
           error: data?.error || `Gateway returned HTTP ${res.status}`,
         },
         { status: 502 }
@@ -47,6 +77,7 @@ export async function GET() {
 
     return NextResponse.json({
       ...data,
+      provider: 'crm_wa',
       ready: data?.status === 'connected',
     });
   } catch (err: unknown) {
@@ -56,7 +87,7 @@ export async function GET() {
       : (err instanceof Error ? err.message : String(err));
 
     return NextResponse.json(
-      { ready: false, status: 'unreachable', error: msg },
+      { ready: false, status: 'unreachable', provider: 'crm_wa', error: msg },
       { status: 503 }
     );
   }
