@@ -3,8 +3,8 @@
 require('dotenv').config();
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const express = require('express');
 
 const isServerless = Boolean(
   process.env.VERCEL ||
@@ -24,7 +24,7 @@ function resolveStatefulAuthPath() {
   return path.join(__dirname, 'auth_info_baileys');
 }
 
-// Hostinger/VPS memiliki filesystem persisten. WA_SESSION_BASE64 ditujukan untuk
+// Hostinger/VPS memiliki filesystem persisten. Session bundle ENV ditujukan untuk
 // serverless dan dapat meracuni startup bila bundle lama terus direstore.
 if (!isServerless && !restoreSessionFromEnv) {
   const hadSessionEnv = Boolean(
@@ -56,10 +56,59 @@ if (!isServerless && forceFreshSession) {
   }
 }
 
+// Tambahkan diagnostics overlay ke dashboard tanpa mengubah kontrak server.js.
+// Dashboard lama menggabungkan error/disconnected/initializing menjadi satu UI generik;
+// overlay ini menampilkan status dan alasan disconnect yang sebenarnya.
+const originalSend = express.response.send;
+express.response.send = function patchedSend(body) {
+  if (
+    this.req?.path === '/' &&
+    typeof body === 'string' &&
+    body.includes('</body>') &&
+    !body.includes('gatewayRuntimeDiagnostics')
+  ) {
+    const diagnosticsScript = `
+<script>
+(function gatewayRuntimeDiagnostics() {
+  async function renderRuntimeDiagnostics() {
+    try {
+      const res = await fetch('/api/status?_diag=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!['error', 'disconnected'].includes(data.status)) return;
+
+      const app = document.getElementById('app');
+      if (!app) return;
+      const reason = data.lastDisconnectReason || 'Tidak ada detail disconnect dari Baileys.';
+      const title = data.status === 'error' ? 'Gateway WhatsApp Error' : 'WhatsApp Belum Terhubung';
+      app.innerHTML = \`
+        <div class="status-pill status-disconnected">
+          <span class="dot dot-disconnected"></span>
+          <span>\${title}</span>
+        </div>
+        <p style="font-size:13px;color:#fca5a5;margin:14px 0 8px;max-width:440px;word-break:break-word;">
+          \${reason}
+        </p>
+        <p style="font-size:12px;color:var(--text-muted);max-width:440px;line-height:1.6;">
+          Jika sesi lama rusak/stale pada Hostinger, aktifkan <strong>WA_FORCE_FRESH_SESSION=true</strong>
+          untuk satu deployment agar QR baru dibuat. Setelah scan berhasil, kembalikan ke <strong>false</strong>.
+        </p>
+      \`;
+    } catch (_) {}
+  }
+
+  setTimeout(renderRuntimeDiagnostics, 500);
+  setInterval(renderRuntimeDiagnostics, 2500);
+})();
+</script>`;
+    body = body.replace('</body>', diagnosticsScript + '\n</body>');
+  }
+  return originalSend.call(this, body);
+};
+
 const app = require('./server');
 
-// Startup observability untuk Hostinger/VPS. Tidak mengubah behavior gateway;
-// hanya mencetak status nyata agar state "initializing" tidak menjadi black box.
+// Startup observability untuk log Hostinger/VPS.
 if (!isServerless) {
   const port = Number(process.env.PORT || 3005);
   const delayMs = Number(process.env.WA_STARTUP_DIAGNOSTIC_DELAY_MS || 15000);
