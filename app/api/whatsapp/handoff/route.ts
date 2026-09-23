@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requestHumanHandoff } from '@/lib/whatsapp/handoff.client';
+import { recordLiveChatMessage } from '@/lib/waha.service';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/whatsapp/handoff
- * 
- * Initiates human CS handoff using Transactional Outbox.
- * Returns HTTP 202 Accepted immediately once persisted.
+ *
+ * Compatibility layer for the stable legacy WhatsApp gateway.
+ * The gateway keeps using /api/sendText; this route preserves the website API
+ * expected by MarBot while delegating to the legacy-safe send flow.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -28,7 +30,15 @@ export async function POST(req: NextRequest) {
       requestId,
     });
 
-    return NextResponse.json(result, { status: result.accepted ? 202 : 500 });
+    if (result.accepted) {
+      try {
+        recordLiveChatMessage(sessionId, 'user', String(message));
+      } catch (storageError) {
+        console.warn('[Handoff] Message sent but local history write failed:', storageError);
+      }
+    }
+
+    return NextResponse.json(result, { status: result.accepted ? 202 : 502 });
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     return NextResponse.json(

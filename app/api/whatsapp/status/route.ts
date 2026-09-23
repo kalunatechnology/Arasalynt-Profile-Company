@@ -5,30 +5,59 @@ export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/whatsapp/status
- * 
- * Proxies /ready from Hostinger WhatsApp Backend.
+ *
+ * Legacy-compatible proxy to the stable gateway /api/status endpoint.
  */
 export async function GET() {
   if (!WA_CONFIG.baseUrl) {
     return NextResponse.json(
-      { ready: false, error: 'WhatsApp Gateway URL is not configured' },
+      { ready: false, status: 'config_error', error: 'WhatsApp Gateway URL is not configured' },
       { status: 503 }
     );
   }
 
   try {
     const headers: Record<string, string> = {};
-    if (WA_CONFIG.secret) headers['x-gateway-secret'] = WA_CONFIG.secret;
+    if (WA_CONFIG.secret) {
+      headers['x-gateway-secret'] = WA_CONFIG.secret;
+      headers['X-Api-Key'] = WA_CONFIG.secret;
+    }
 
-    const res = await fetch(`${WA_CONFIG.baseUrl}/ready`, {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), WA_CONFIG.timeoutMs);
+    const res = await fetch(`${WA_CONFIG.baseUrl}/api/status`, {
       headers,
-      next: { revalidate: 0 },
+      signal: controller.signal,
+      cache: 'no-store',
     });
+    clearTimeout(timeout);
 
     const data = await res.json().catch(() => null);
-    return NextResponse.json(data || { status: 'unknown' }, { status: res.status });
+
+    if (!res.ok) {
+      return NextResponse.json(
+        {
+          ready: false,
+          status: data?.status || 'gateway_error',
+          error: data?.error || `Gateway returned HTTP ${res.status}`,
+        },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json({
+      ...data,
+      ready: data?.status === 'connected',
+    });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ ready: false, error: msg }, { status: 503 });
+    const isTimeout = err instanceof Error && err.name === 'AbortError';
+    const msg = isTimeout
+      ? `Gateway timeout (${WA_CONFIG.timeoutMs}ms)`
+      : (err instanceof Error ? err.message : String(err));
+
+    return NextResponse.json(
+      { ready: false, status: 'unreachable', error: msg },
+      { status: 503 }
+    );
   }
 }

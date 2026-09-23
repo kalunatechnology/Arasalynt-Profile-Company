@@ -1,4 +1,4 @@
-import { WA_CONFIG } from './config';
+import { forwardGuestInquiryToWhatsApp } from '@/lib/waha.service';
 
 export interface HandoffPayload {
   sessionId: string;
@@ -17,57 +17,30 @@ export interface HandoffResponse {
 }
 
 /**
- * Request human handoff to Hostinger WhatsApp Backend.
- * Uses stable Request ID & Idempotency Key to prevent double-sends.
+ * Compatibility handoff for the stable legacy Hostinger gateway.
+ *
+ * The gateway runtime intentionally stays on the proven /api/sendText contract.
+ * This client reuses forwardGuestInquiryToWhatsApp(), which formats the session
+ * marker and sends it through /api/sendText without changing gateway startup.
  */
 export async function requestHumanHandoff(payload: HandoffPayload): Promise<HandoffResponse> {
-  const requestId = payload.requestId || `handoff_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const idempotencyKey = `waout_${requestId}`;
-  const timestamp = Date.now().toString();
-
-  if (!WA_CONFIG.configured) {
-    return {
-      accepted: false,
-      requestId,
-      conversationCode: '',
-      status: 'CONFIG_ERROR',
-      error: 'WhatsApp Gateway belum dikonfigurasi dengan aman.',
-    };
-  }
-
-  const url = `${WA_CONFIG.baseUrl}/api/whatsapp/handoff`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), WA_CONFIG.timeoutMs);
+  const requestId =
+    payload.requestId ||
+    `handoff_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Request-ID': requestId,
-        'X-Idempotency-Key': idempotencyKey,
-        'X-Timestamp': timestamp,
-        'x-gateway-secret': WA_CONFIG.secret,
-        'X-Api-Key': WA_CONFIG.secret,
-      },
-      body: JSON.stringify({
-        requestId,
-        sessionId: payload.sessionId,
-        message: payload.message,
-        name: payload.name,
-      }),
-      signal: controller.signal,
-    });
+    const sent = await forwardGuestInquiryToWhatsApp(
+      payload.sessionId,
+      payload.message,
+      payload.name,
+    );
 
-    const data = await res.json().catch(() => null);
-
-    if (res.status === 202 || res.ok) {
+    if (sent) {
       return {
         accepted: true,
         requestId,
-        conversationCode: data?.conversationCode || 'QUEUED',
-        status: data?.status || 'QUEUED',
-        isDuplicate: Boolean(data?.isDuplicate),
+        conversationCode: payload.sessionId,
+        status: 'SENT',
       };
     }
 
@@ -76,24 +49,18 @@ export async function requestHumanHandoff(payload: HandoffPayload): Promise<Hand
       requestId,
       conversationCode: '',
       status: 'FAILED',
-      error: data?.error || `Gateway returned HTTP ${res.status}`,
+      error: 'WhatsApp Gateway menolak atau gagal mengirim handoff.',
     };
   } catch (err: unknown) {
-    const isTimeout = err instanceof Error && err.name === 'AbortError';
-    const msg = isTimeout
-      ? `Gateway timeout (${WA_CONFIG.timeoutMs}ms)`
-      : (err instanceof Error ? err.message : String(err));
-
-    console.warn('[HandoffClient] Error sending handoff to gateway:', msg);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[HandoffClient] Legacy gateway handoff failed:', msg);
 
     return {
       accepted: false,
       requestId,
       conversationCode: '',
-      status: 'RETRY_WAIT',
+      status: 'FAILED',
       error: msg,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
