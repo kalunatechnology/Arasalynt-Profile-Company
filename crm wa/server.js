@@ -12,16 +12,6 @@ const {
   getMissingConfig,
 } = require('./chatbot-client');
 
-const db = require('./config/database');
-const conversationRepo = require('./repositories/conversation.repository');
-const messageRepo = require('./repositories/message.repository');
-const { processHandoffRequest } = require('./services/handoff.service');
-const { processInboundWhatsAppMessage } = require('./services/inbound.service');
-const { registerGatewaySender, triggerImmediateDispatch } = require('./services/outbox.service');
-const { startRecoveryCron } = require('./services/reconciliation.service');
-const healthService = require('./services/health.service');
-const { extractShortCode } = require('./services/shortcode.service');
-
 const app = express();
 
 // ── 1. REVERSE PROXY TRUST (Wajib untuk Vercel / Nginx / Cloudflare) ────
@@ -151,23 +141,15 @@ restoreSessionFromEnv();
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-gateway-secret', 'x-api-key', 'x-request-id', 'x-idempotency-key', 'x-timestamp'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-gateway-secret', 'x-api-key'],
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Middleware Verifikasi API Key / Secret.
-// Production is fail-closed; development may run without a secret for local testing.
+// Middleware Verifikasi API Key / Secret (Opsional)
 function requireGatewayAuth(req, res, next) {
-  if (!GATEWAY_SECRET) {
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(503).json({
-        error: 'Gateway authentication is not configured.',
-      });
-    }
-    return next();
-  }
+  if (!GATEWAY_SECRET) return next();
 
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -183,59 +165,6 @@ function requireGatewayAuth(req, res, next) {
   });
 }
 
-// ── RELIABLE WEBSITE ↔ GATEWAY CONTRACT ────────────────────────────────
-app.post('/api/whatsapp/handoff', requireGatewayAuth, async (req, res) => {
-  try {
-    await db.initDatabase();
-    const requestId = req.headers['x-request-id'] || req.body?.requestId;
-    const { sessionId, message, name } = req.body || {};
-    if (!sessionId || !message || !String(message).trim()) {
-      return res.status(400).json({ accepted: false, error: 'sessionId dan message wajib diisi.' });
-    }
-    const result = await processHandoffRequest({ requestId, sessionId, message: String(message).trim(), name });
-    return res.status(202).json(result);
-  } catch (error) {
-    console.error('[HandoffRoute] Gagal memproses handoff:', error);
-    return res.status(500).json({ accepted: false, error: 'Gagal memproses handoff WhatsApp.' });
-  }
-});
-
-app.get('/api/messages', requireGatewayAuth, async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  try {
-    await db.initDatabase();
-    const sessionId = String(req.query.sessionId || '').trim();
-    if (!sessionId) return res.status(400).json({ success:false, error:'sessionId parameter is required', data:[] });
-    const conversation = await conversationRepo.findBySessionId(sessionId);
-    if (!conversation) return res.json({ success:true, data:[] });
-    const rows = await messageRepo.getMessagesByConversation(conversation.id);
-    const data = rows.map((row) => ({
-      id: row.id,
-      sessionId: conversation.session_id,
-      sender: row.sender_type === 'HUMAN_CS' ? 'human_cs' : row.sender_type === 'USER' ? 'user' : 'bot',
-      content: row.content,
-      createdAt: row.created_at,
-      deliveryStatus: row.delivery_status,
-    }));
-    return res.json({ success:true, data });
-  } catch (error) {
-    console.error('[MessagesRoute] Gagal mengambil live chat messages:', error);
-    return res.status(503).json({ success:false, error:'Message store unavailable', data:[] });
-  }
-});
-
-app.get('/ready', async (_req, res) => {
-  try {
-    await db.initDatabase();
-    const readiness = await healthService.getReadinessStatus();
-    return res.status(readiness.ready ? 200 : 503).json({ ...readiness, database:'READY' });
-  } catch (error) {
-    return res.status(503).json({ ready:false, process:'UP', database:'DOWN', error:error.message });
-  }
-});
-
 // ── 7. GLOBAL STATE & BAILEYS BOT MANAGEMENT ──────────────────────────
 let sock = null;
 let connectionStatus = 'initializing';
@@ -245,7 +174,6 @@ let lastDisconnectReason = null;
 let isStartingBot = false;
 const processedMessageIds = new Set();
 const startupTime = new Date().toISOString();
-healthService.setSessionStatus('DISCONNECTED');
 
 const msgHistoryMap = new Map();
 
@@ -488,7 +416,6 @@ async function startWhatsAppBot() {
             },
           });
           connectionStatus = 'qr_ready';
-          healthService.setSessionStatus('DISCONNECTED');
           console.log('📱 QR Code baru siap di-scan via web.');
         } catch (err) {
           console.error('Failed generating QR image:', err);
@@ -502,7 +429,6 @@ async function startWhatsAppBot() {
         console.log(`⚠️ Koneksi terputus. Kode: ${statusCode} | Auto-Reconnect: ${shouldReconnect}`);
 
         connectionStatus = 'disconnected';
-        healthService.setSessionStatus('DISCONNECTED');
         currentQrImage = null;
         connectedUserPhone = null;
 
@@ -523,11 +449,9 @@ async function startWhatsAppBot() {
       } else if (connection === 'open') {
         currentQrImage = null;
         connectionStatus = 'connected';
-        healthService.setSessionStatus('WORKING');
         lastDisconnectReason = null;
         connectedUserPhone = sock?.user?.id ? sock.user.id.split(':')[0] : 'Aktif';
         console.log(`✅ WHATSAPP ARSALYNK TERHUBUNG! Akun: ${connectedUserPhone}`);
-        triggerImmediateDispatch().catch((err) => console.warn('[Outbox] Dispatch setelah reconnect gagal:', err.message));
       }
     });
 
@@ -655,30 +579,6 @@ async function startWhatsAppBot() {
 
         // Normalisasi format JID: Ubah @lid menjadi @s.whatsapp.net agar webhook Next.js tidak mengabaikannya sebagai "LID duplicate"
         const normalizedFrom = senderJid ? senderJid.replace('@lid', '@s.whatsapp.net') : senderJid;
-        healthService.recordInboundActivity();
-
-        const quotedMessageId =
-          msg.message?.extendedTextMessage?.contextInfo?.stanzaId ||
-          msg.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo?.stanzaId ||
-          null;
-        const websiteShortCode = extractShortCode(messageText);
-        const shouldPersistWebsiteReply =
-          Boolean(msg.key?.fromMe) &&
-          Boolean(sessionId || websiteShortCode || quotedMessageId);
-
-        if (shouldPersistWebsiteReply) {
-          try {
-            await db.initDatabase();
-            await processInboundWhatsAppMessage({
-              providerMessageId: msgId || `wa_${Date.now()}`,
-              fromJid: normalizedFrom || 'unknown',
-              body: messageText,
-              quotedMessageId,
-            });
-          } catch (persistError) {
-            console.error('[Inbound] Gagal menyimpan balasan CS sebelum webhook:', persistError.message);
-          }
-        }
 
         forwardToWebhook({
           event: 'message',
@@ -696,7 +596,6 @@ async function startWhatsAppBot() {
   } catch (error) {
     console.error('❌ Gagal menginisialisasi WhatsApp Bot:', error);
     connectionStatus = 'error';
-    healthService.setSessionStatus('DEGRADED');
     lastDisconnectReason = error.message;
   } finally {
     isStartingBot = false;
@@ -718,20 +617,17 @@ async function forwardToWebhook(payload, retries = 2) {
       });
 
       if (response.ok) {
-        healthService.recordWebhookStatus(true);
         const resData = await response.json().catch(() => null);
         if (resData?.status === 'ignored') {
           console.warn(`⚠️ Webhook mengabaikan pesan: ${resData.reason || 'Ditolak oleh website'}`);
         } else {
-          console.log(`✔️ Webhook website menerima event. (${NEXTJS_WEBHOOK_URL})`);
+          console.log(`✔️ Berhasil disimpan ke percakapan website! (${NEXTJS_WEBHOOK_URL})`);
         }
         return true;
       }
       const errText = await response.text().catch(() => '');
-      healthService.recordWebhookStatus(false);
       console.warn(`⚠️ Webhook (${NEXTJS_WEBHOOK_URL}) merespons status ${response.status}: ${errText.slice(0, 100)} (Percobaan ${attempt}/${retries})`);
     } catch (err) {
-      healthService.recordWebhookStatus(false);
       console.warn(`⚠️ Gagal menghubungi Webhook (${NEXTJS_WEBHOOK_URL}) (Percobaan ${attempt}/${retries}): ${err.message}`);
     }
     if (attempt < retries) {
@@ -782,16 +678,29 @@ function savePhoneLidMap() {
   } catch {}
 }
 
-// Shared outbound sender used by REST and Transactional Outbox.
-async function sendTextViaGateway({ chatId, phone, text }) {
+// Outbound message API
+app.post('/api/sendText', requireGatewayAuth, async (req, res) => {
+  const { chatId, text, phone } = req.body;
   const target = chatId || (phone ? `${String(phone).replace(/\D/g, '')}@s.whatsapp.net` : null);
-  if (!target || !text) return { success:false, statusCode:400, error:'Parameter chatId/phone dan text wajib diisi.' };
-  if (!sock || connectionStatus !== 'connected') {
-    return { success:false, statusCode:503, error:'WhatsApp Gateway belum terhubung.', status:connectionStatus, lastDisconnectReason };
+
+  if (!target || !text) {
+    return res.status(400).json({ error: 'Parameter chatId/phone dan text wajib diisi.' });
   }
+
+  if (!sock || connectionStatus !== 'connected') {
+    return res.status(503).json({
+      error: 'WhatsApp Gateway belum terhubung. Silakan buka dashboard untuk scan QR.',
+      status: connectionStatus,
+      lastDisconnectReason,
+    });
+  }
+
   try {
     let jid = target.includes('@') ? target.replace('@c.us', '@s.whatsapp.net') : `${target}@s.whatsapp.net`;
     const rawNumber = jid.split('@')[0];
+
+    // Sinkronisasi Sesi Signal: Jika ada pemetaan LID untuk nomor ini, kirim langsung ke LID
+    // Ini menghilangkan 'Bad MAC' pada balasan pertama karena pengirim dan penerima memakai session ratchet yang sama
     if (jid.endsWith('@s.whatsapp.net')) {
       if (phoneLidMap[rawNumber]) {
         jid = phoneLidMap[rawNumber];
@@ -803,30 +712,31 @@ async function sendTextViaGateway({ chatId, phone, text }) {
             phoneLidMap[rawNumber] = found.lid;
             savePhoneLidMap();
             jid = found.lid;
+            console.log(`🔗 Target nomor ${rawNumber} dipetakan ke WhatsApp LID: ${jid}`);
           }
         } catch {}
       }
     }
-    const result = await sock.sendMessage(jid, { text:String(text) });
+
+    const result = await sock.sendMessage(jid, { text: String(text) });
     if (result?.key?.id && result?.message) {
       msgHistoryMap.set(result.key.id, result.message);
-      if (msgHistoryMap.size > 500) msgHistoryMap.delete(msgHistoryMap.keys().next().value);
+      if (msgHistoryMap.size > 500) {
+        const first = msgHistoryMap.keys().next().value;
+        msgHistoryMap.delete(first);
+      }
     }
-    healthService.recordOutboundActivity();
-    healthService.recordAckActivity();
-    return { success:true, messageId:result?.key?.id, to:jid, timestamp:Date.now() };
+    console.log(`📤 Pesan terkirim ke WhatsApp (${jid}): "${String(text).slice(0, 50)}..."`);
+    return res.json({
+      success: true,
+      messageId: result?.key?.id,
+      to: jid,
+      timestamp: Date.now(),
+    });
   } catch (error) {
     console.error('❌ Gagal mengirim pesan WhatsApp:', error);
-    return { success:false, statusCode:500, error:error.message };
+    return res.status(500).json({ error: error.message });
   }
-}
-
-registerGatewaySender(async ({ to, text }) => sendTextViaGateway({ phone:to, text }));
-
-app.post('/api/sendText', requireGatewayAuth, async (req, res) => {
-  const result = await sendTextViaGateway(req.body || {});
-  if (!result.success) return res.status(result.statusCode || 500).json(result);
-  return res.json(result);
 });
 
 // JSON Status API for Dashboard
@@ -1272,29 +1182,15 @@ app.get('/', (req, res) => {
 });
 
 // ── 10. SERVER BOOTSTRAP ───────────────────────────────────────────────
-let recoveryCronStarted = false;
-async function bootstrapRuntime() {
-  await db.initDatabase();
-  if (!recoveryCronStarted) {
-    startRecoveryCron(30000);
-    recoveryCronStarted = true;
-  }
-  if (isServerless) {
-    startWhatsAppBot();
-    return;
-  }
+if (!isServerless || process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`\n🤖 WhatsApp Gateway Control Center aktif di: http://localhost:${PORT}`);
     console.log(`📁 Auth Storage Path: ${AUTH_PATH} (Serverless Mode: ${isServerless})`);
     startWhatsAppBot();
   });
-}
-if (process.env.NODE_ENV !== 'test') {
-  bootstrapRuntime().catch((error) => {
-    console.error('❌ FATAL: WhatsApp Gateway gagal bootstrap:', error);
-    healthService.setSessionStatus('DEGRADED');
-    if (!isServerless) process.exitCode = 1;
-  });
+} else {
+  // Auto-init for Serverless Container Cold Start
+  startWhatsAppBot();
 }
 
 // ── 11. GLOBAL PROCESS ERROR SHIELDS (Anti-Crash Guard) ────────────────

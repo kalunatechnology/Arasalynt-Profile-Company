@@ -26,67 +26,36 @@ const DB_CONFIG = {
   queueLimit: 0,
 };
 
-let initPromise = null;
-
 async function initDatabase() {
-  if (initPromise) return initPromise;
-
-  initPromise = (async () => {
-    const hasMySQLConfig = Boolean(process.env.DB_HOST && process.env.DB_USER && process.env.DB_NAME);
-    const isServerlessRuntime = Boolean(
-      process.env.VERCEL ||
-      process.env.AWS_LAMBDA_FUNCTION_NAME ||
-      process.env.LAMBDA_TASK_ROOT ||
-      process.env.NOW_REGION
-    );
-    const requireMySQL =
-      String(process.env.WA_REQUIRE_MYSQL || 'false').toLowerCase() === 'true' ||
-      (process.env.NODE_ENV === 'production' && isServerlessRuntime);
-
-    if (hasMySQLConfig) {
-      try {
-        const mysql = require('mysql2/promise');
-        mysqlPool = mysql.createPool({
-          ...DB_CONFIG,
-          connectTimeout: parseInt(process.env.DB_CONNECT_TIMEOUT_MS || '10000', 10),
-        });
-        const conn = await mysqlPool.getConnection();
-        await conn.ping();
-        conn.release();
-        dbType = 'mysql';
-        console.log(`[Database] Terhubung ke MySQL/MariaDB: ${DB_CONFIG.host}:${DB_CONFIG.port}/${DB_CONFIG.database}`);
-        await runMySQLMigrations(mysqlPool);
-        return;
-      } catch (err) {
-        mysqlPool = null;
-        if (requireMySQL) {
-          throw new Error(`MySQL connection required but failed: ${err.message}`);
-        }
-        console.warn(`[Database] Gagal koneksi ke MySQL (${err.message}). Menggunakan SQLite persisten fallback.`);
-      }
-    } else if (requireMySQL) {
-      throw new Error('MySQL persistence is required for this runtime, but DB_HOST/DB_USER/DB_NAME are incomplete.');
+  if (process.env.DB_HOST && process.env.DB_USER && process.env.DB_NAME) {
+    try {
+      const mysql = require('mysql2/promise');
+      mysqlPool = mysql.createPool(DB_CONFIG);
+      // Test connection
+      const conn = await mysqlPool.getConnection();
+      await conn.ping();
+      conn.release();
+      dbType = 'mysql';
+      console.log(`[Database] Terhubung ke MySQL/MariaDB Hostinger: ${DB_CONFIG.host}:${DB_CONFIG.port}/${DB_CONFIG.database}`);
+      await runMySQLMigrations(mysqlPool);
+      return;
+    } catch (err) {
+      console.warn(`[Database] Gagal koneksi ke MySQL (${err.message}). Menggunakan SQLite persisten fallback.`);
     }
-
-    const Database = require('better-sqlite3');
-    const dbPath = process.env.SQLITE_DB_PATH
-      ? path.resolve(process.env.SQLITE_DB_PATH)
-      : path.join(__dirname, '..', 'wa_reliability.db');
-
-    sqliteDb = new Database(dbPath);
-    sqliteDb.pragma('journal_mode = WAL');
-    sqliteDb.pragma('foreign_keys = ON');
-    dbType = 'sqlite';
-    console.log(`[Database] SQLite persisten fallback aktif: ${dbPath}`);
-    runSQLiteMigrations(sqliteDb);
-  })();
-
-  try {
-    return await initPromise;
-  } catch (err) {
-    initPromise = null;
-    throw err;
   }
+
+  // Fallback to SQLite
+  const Database = require('better-sqlite3');
+  const dbPath = process.env.SQLITE_DB_PATH
+    ? path.resolve(process.env.SQLITE_DB_PATH)
+    : path.join(__dirname, '..', 'wa_reliability.db');
+
+  sqliteDb = new Database(dbPath);
+  sqliteDb.pragma('journal_mode = WAL');
+  sqliteDb.pragma('foreign_keys = ON');
+  dbType = 'sqlite';
+  console.log(`[Database] Menggunakan SQLite persisten di: ${dbPath}`);
+  runSQLiteMigrations(sqliteDb);
 }
 
 async function runMySQLMigrations(pool) {
