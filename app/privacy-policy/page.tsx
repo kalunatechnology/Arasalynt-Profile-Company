@@ -116,10 +116,10 @@ const POLICY_SECTIONS = [
         <p>
           To request deletion, email us at{' '}
           <a
-            href="mailto:corporate.arsalynk@gmail.com?subject=Data%20Deletion%20Request"
+            href="mailto:corporate@arsalynk.com?subject=Data%20Deletion%20Request"
             className="font-semibold text-[#1A3E9E] underline decoration-[#1A3E9E]/30 underline-offset-4 transition hover:decoration-[#1A3E9E]"
           >
-            corporate.arsalynk@gmail.com
+            corporate@arsalynk.com
           </a>{' '}
           with the subject <strong>Data Deletion Request</strong> and provide enough
           information for us to identify the relevant interaction. We may need to verify
@@ -229,7 +229,7 @@ export default function PrivacyPolicyPage() {
                   Need assistance?
                 </p>
                 <a
-                  href="mailto:corporate.arsalynk@gmail.com"
+                  href="mailto:corporate@arsalynk.com"
                   className="mt-3 inline-flex items-center gap-2 font-body text-[13px] font-semibold text-white no-underline transition-colors hover:text-[#E6FF2A]"
                 >
                   Contact our team <ArrowIcon />
@@ -282,7 +282,7 @@ export default function PrivacyPolicyPage() {
                   </p>
                   <div className="mt-7 flex flex-wrap gap-3">
                     <a
-                      href="mailto:corporate.arsalynk@gmail.com"
+                      href="mailto:corporate@arsalynk.com"
                       className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-full bg-[#E6FF2A] px-6 font-body text-[12px] font-bold tracking-[0.02em] text-[#101010] no-underline transition hover:bg-[#F4FA51]"
                     >
                       EMAIL ARSALYNK <ArrowIcon />
