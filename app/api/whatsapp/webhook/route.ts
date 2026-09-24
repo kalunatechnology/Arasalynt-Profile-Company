@@ -57,12 +57,14 @@ export async function GET(req: NextRequest) {
     token === WA_CONFIG.cloudVerifyToken &&
     challenge
   ) {
+    console.info('[MetaWebhook] Verification challenge accepted.');
     return new NextResponse(challenge, {
       status: 200,
       headers: { 'Content-Type': 'text/plain' },
     });
   }
 
+  console.warn('[MetaWebhook] Verification challenge rejected.');
   return NextResponse.json(
     { error: 'Meta webhook verification failed' },
     { status: 403 }
@@ -73,13 +75,38 @@ async function handleMetaWebhook(
   payload: any,
   requestId: string
 ): Promise<NextResponse> {
+  let received = 0;
   let stored = 0;
   let ignored = 0;
 
   for (const entry of payload?.entry || []) {
     for (const change of entry?.changes || []) {
+      // WhatsApp inbound messages and delivery statuses are delivered through
+      // the "messages" webhook field. Other subscribed fields must not become
+      // website live-chat rows.
+      if (change?.field && change.field !== 'messages') {
+        ignored++;
+        continue;
+      }
+
       const value = change?.value;
       if (!value) continue;
+
+      const webhookPhoneNumberId = String(
+        value?.metadata?.phone_number_id || ''
+      ).trim();
+
+      if (
+        webhookPhoneNumberId &&
+        WA_CONFIG.cloudPhoneNumberId &&
+        webhookPhoneNumberId !== WA_CONFIG.cloudPhoneNumberId
+      ) {
+        console.warn(
+          `[MetaWebhook][reqId:${requestId}] Ignored event for unexpected phone_number_id=${webhookPhoneNumberId}.`
+        );
+        ignored++;
+        continue;
+      }
 
       // Delivery/read/sent callbacks are acknowledged but do not become chat rows.
       if (Array.isArray(value.statuses) && !Array.isArray(value.messages)) {
@@ -88,10 +115,15 @@ async function handleMetaWebhook(
       }
 
       for (const message of value.messages || []) {
+        received++;
+
         const msgId = String(message?.id || '').trim();
         const body = String(message?.text?.body || '').trim();
 
         if (message?.type !== 'text' || !body) {
+          console.info(
+            `[MetaWebhook][reqId:${requestId}] Ignored non-text/empty message msgId=${msgId || '-'}.`
+          );
           ignored++;
           continue;
         }
@@ -108,13 +140,17 @@ async function handleMetaWebhook(
         }
 
         try {
-          recordLiveChatMessage(
+          const saved = recordLiveChatMessage(
             sessionId,
             'human_cs',
             body,
             msgId || undefined,
           );
           stored++;
+
+          console.info(
+            `[MetaWebhook][reqId:${requestId}] Stored CS reply session=${sessionId} msgId=${msgId || '-'} localMessageId=${saved.id}`
+          );
         } catch (storageError: unknown) {
           const storageMsg =
             storageError instanceof Error
@@ -122,6 +158,9 @@ async function handleMetaWebhook(
               : String(storageError);
 
           if (storageMsg.includes('UNIQUE constraint failed')) {
+            console.info(
+              `[MetaWebhook][reqId:${requestId}] Duplicate Meta message ignored msgId=${msgId || '-'}.`
+            );
             ignored++;
             continue;
           }
@@ -131,9 +170,14 @@ async function handleMetaWebhook(
     }
   }
 
+  console.info(
+    `[MetaWebhook][reqId:${requestId}] Completed received=${received} stored=${stored} ignored=${ignored}`
+  );
+
   return NextResponse.json({
     status: 'ok',
     provider: 'meta_cloud',
+    received,
     stored,
     ignored,
   });
@@ -236,6 +280,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid Meta signature' }, { status: 401 });
       }
 
+      console.info(
+        `[MetaWebhook][reqId:${requestId}] Valid Meta webhook received.`
+      );
       return handleMetaWebhook(payload, requestId);
     }
 
