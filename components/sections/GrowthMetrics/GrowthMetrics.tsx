@@ -1,13 +1,6 @@
 'use client';
 
-import { Inter } from 'next/font/google';
 import { useRef, useState, useEffect } from 'react';
-
-const inter = Inter({
-  subsets: ['latin'],
-  weight: ['200', '300', '400', '500', '600', '700'],
-  display: 'swap',
-});
 
 const ArrowIcon = () => (
   <svg
@@ -75,7 +68,7 @@ export default function GrowthMetrics() {
   return (
     <section 
       ref={sectionRef}
-      className={`safari-paint-section relative overflow-hidden bg-[#101010] py-[80px] ${inter.className}`}
+      className="safari-paint-section relative overflow-hidden bg-[#101010] py-[80px] font-body"
       id="growth" 
       aria-label="Growth and Insights"
     >
@@ -176,7 +169,6 @@ export default function GrowthMetrics() {
                 <FolderIcon />
               </div>
             </div>
-
           </div>
 
         </div>
