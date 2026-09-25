@@ -80,7 +80,7 @@ export function getEnterpriseChatbotConfig(): EnterpriseChatbotConfig {
     ? Math.min(Math.max(Math.trunc(timeoutCandidate), 1000), 120000)
     : 70000;
 
-  const projectScopeMode =
+  const projectScopeMode: 'ALL' | 'LIST' =
     String(process.env.CHATBOT_PROJECT_SCOPE_MODE || 'LIST').toUpperCase() === 'ALL'
       ? 'ALL'
       : 'LIST';
@@ -111,7 +111,7 @@ export function getEnterpriseChatbotConfig(): EnterpriseChatbotConfig {
 /** Matches Chatbot_Arsalynk canonicalJson exactly. */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? 'null';
   }
 
   if (Array.isArray(value)) {
