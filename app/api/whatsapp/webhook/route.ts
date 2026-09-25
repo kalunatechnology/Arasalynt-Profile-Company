@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { WA_CONFIG } from '@/lib/whatsapp/config';
 import { recordLiveChatMessage } from '@/lib/waha.service';
+import { persistDurableLiveChatMessage } from '@/lib/whatsapp/live-chat-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,13 +22,6 @@ function extractWebsiteSessionId(text: string): string {
   return match?.[1] || match?.[2] || '';
 }
 
-/**
- * Verify Meta's x-hub-signature-256 against the exact raw request body.
- *
- * Meta signs webhook payloads with the Meta App Secret. To support safe secret
- * rotation and deployments that used a common alias previously, all configured
- * candidates are checked without ever logging their values.
- */
 function verifyMetaSignature(rawBody: string, signature: string | null): MetaSignatureCheck {
   const candidates = WA_CONFIG.cloudAppSecrets;
 
@@ -61,6 +55,41 @@ function verifyMetaSignature(rawBody: string, signature: string | null): MetaSig
   }
 
   return { valid: false, reason: 'signature_mismatch' };
+}
+
+async function storeInboundReply(
+  sessionId: string,
+  body: string,
+  msgId: string,
+  requestId: string,
+) {
+  try {
+    const saved = await persistDurableLiveChatMessage({
+      sessionId,
+      sender: 'human_cs',
+      content: body,
+      whatsappMessageId: msgId || undefined,
+    });
+
+    console.info(
+      `[Webhook][reqId:${requestId}] Durable CS reply stored session=${sessionId} msgId=${msgId || '-'} messageId=${saved.id}`
+    );
+    return saved;
+  } catch (durableError: unknown) {
+    const durableMessage = durableError instanceof Error ? durableError.message : String(durableError);
+    console.error(
+      `[Webhook][reqId:${requestId}] Durable store failed; using local emergency fallback: ${durableMessage}`
+    );
+
+    // Emergency fallback only. Vercel /tmp is not the canonical production store,
+    // but keeping it prevents a transient Chatbot API outage from dropping a reply.
+    return recordLiveChatMessage(
+      sessionId,
+      'human_cs',
+      body,
+      msgId || undefined,
+    );
+  }
 }
 
 /**
@@ -128,7 +157,6 @@ async function handleMetaWebhook(
         continue;
       }
 
-      // Delivery/read/sent callbacks are acknowledged but do not become chat rows.
       if (Array.isArray(value.statuses) && !Array.isArray(value.messages)) {
         ignored += value.statuses.length;
         continue;
@@ -158,17 +186,8 @@ async function handleMetaWebhook(
         }
 
         try {
-          const saved = recordLiveChatMessage(
-            sessionId,
-            'human_cs',
-            body,
-            msgId || undefined,
-          );
+          await storeInboundReply(sessionId, body, msgId, requestId);
           stored++;
-
-          console.info(
-            `[MetaWebhook][reqId:${requestId}] Stored CS reply session=${sessionId} msgId=${msgId || '-'} localMessageId=${saved.id}`
-          );
         } catch (storageError: unknown) {
           const storageMsg =
             storageError instanceof Error
@@ -224,16 +243,7 @@ async function handleLegacyGatewayWebhook(
   }
 
   try {
-    const saved = recordLiveChatMessage(
-      sessionId,
-      'human_cs',
-      body,
-      msgId || undefined,
-    );
-
-    console.log(
-      `[Webhook][reqId:${requestId}] Stored CS reply. session=${sessionId} msgId=${msgId || '-'}`
-    );
+    const saved = await storeInboundReply(sessionId, body, msgId, requestId);
 
     return NextResponse.json({
       status: 'ok',
@@ -269,8 +279,6 @@ export async function POST(req: NextRequest) {
   const requestId = Math.random().toString(36).slice(2, 8);
 
   try {
-    // IMPORTANT: read the body exactly once as text. Parsing req.json() first
-    // would change what is signed and make every valid Meta signature fail.
     const rawBody = await req.text();
     if (!rawBody) {
       return NextResponse.json({ status: 'ignored', reason: 'Empty body' });
