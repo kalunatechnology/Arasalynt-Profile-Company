@@ -1,4 +1,4 @@
-import { DEFAULT_CALLER_CONFIG } from '@/lib/chatbot.service';
+import { getEnterpriseChatbotConfig } from '@/lib/chatbot/enterprise-auth';
 
 export type DurableLiveChatSender = 'user' | 'human_cs';
 
@@ -11,40 +11,21 @@ export interface DurableLiveChatMessage {
   whatsappMessageId?: string | null;
 }
 
-function getChatbotBaseUrl(): string {
-  return (
-    process.env.CHATBOT_API_URL ||
-    process.env.NEXT_PUBLIC_CHATBOT_API_URL ||
-    'https://chatbot-arsalynk.vercel.app'
-  ).replace(/\/$/, '');
-}
-
-function getChatbotToken(): string {
-  return (
-    process.env.CHATBOT_CALLER_TOKEN ||
-    process.env.NEXT_PUBLIC_CHATBOT_CALLER_TOKEN ||
-    DEFAULT_CALLER_CONFIG.callerToken ||
-    ''
-  ).trim();
-}
-
 function buildHeaders(sessionId: string): Record<string, string> {
-  const token = getChatbotToken();
-  if (!token) {
-    throw new Error('CHATBOT_CALLER_TOKEN/NEXT_PUBLIC_CHATBOT_CALLER_TOKEN is not configured');
-  }
+  const config = getEnterpriseChatbotConfig();
 
   return {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${config.tenantApiKey}`,
     'Content-Type': 'application/json',
     'X-External-User-Id': sessionId,
+    'X-Tenant-External-Id': config.externalTenantId,
   };
 }
 
 /**
  * Persist website/WhatsApp live-chat messages in Chatbot_Arsalynk PostgreSQL.
- * This is the canonical production store because Vercel /tmp SQLite is local
- * to one serverless instance and cannot safely bridge webhook -> polling.
+ * Uses the same enterprise TenantCredential as ArsAI instead of the legacy
+ * CallerCredential contract.
  */
 export async function persistDurableLiveChatMessage(input: {
   sessionId: string;
@@ -52,12 +33,12 @@ export async function persistDurableLiveChatMessage(input: {
   content: string;
   whatsappMessageId?: string;
 }): Promise<DurableLiveChatMessage> {
-  const baseUrl = getChatbotBaseUrl();
+  const config = getEnterpriseChatbotConfig();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), Math.min(config.timeoutMs, 10000));
 
   try {
-    const response = await fetch(`${baseUrl}/api/v1/conversations/live-chat/messages`, {
+    const response = await fetch(`${config.baseUrl}/api/v1/conversations/live-chat/messages`, {
       method: 'POST',
       headers: buildHeaders(input.sessionId),
       body: JSON.stringify(input),
@@ -83,13 +64,13 @@ export async function persistDurableLiveChatMessage(input: {
 export async function fetchDurableLiveChatMessages(
   sessionId: string,
 ): Promise<DurableLiveChatMessage[]> {
-  const baseUrl = getChatbotBaseUrl();
+  const config = getEnterpriseChatbotConfig();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), Math.min(config.timeoutMs, 10000));
 
   try {
     const response = await fetch(
-      `${baseUrl}/api/v1/conversations/live-chat/messages?sessionId=${encodeURIComponent(sessionId)}`,
+      `${config.baseUrl}/api/v1/conversations/live-chat/messages?sessionId=${encodeURIComponent(sessionId)}`,
       {
         method: 'GET',
         headers: buildHeaders(sessionId),
