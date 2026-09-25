@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requestHumanHandoff } from '@/lib/whatsapp/handoff.client';
 import { recordLiveChatMessage } from '@/lib/waha.service';
+import { persistDurableLiveChatMessage } from '@/lib/whatsapp/live-chat-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,9 +17,13 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { sessionId, message, name, requestId } = body;
 
-    if (!sessionId || !message) {
+    if (
+      !sessionId ||
+      !/^guest_[a-zA-Z0-9_-]+$/.test(String(sessionId)) ||
+      !String(message || '').trim()
+    ) {
       return NextResponse.json(
-        { error: 'sessionId and message are required' },
+        { error: 'valid sessionId and message are required' },
         { status: 400 }
       );
     }
@@ -32,9 +37,21 @@ export async function POST(req: NextRequest) {
 
     if (result.accepted) {
       try {
-        recordLiveChatMessage(sessionId, 'user', String(message));
-      } catch (storageError) {
-        console.warn('[Handoff] Message sent but local history write failed:', storageError);
+        await persistDurableLiveChatMessage({
+          sessionId: String(sessionId),
+          sender: 'user',
+          content: String(message),
+        });
+      } catch (durableError) {
+        console.error(
+          '[Handoff] Durable history write failed; using local emergency fallback:',
+          durableError,
+        );
+        try {
+          recordLiveChatMessage(sessionId, 'user', String(message));
+        } catch (localError) {
+          console.error('[Handoff] Local history fallback also failed:', localError);
+        }
       }
 
       console.info(
@@ -44,8 +61,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result, { status: 202 });
     }
 
-    // The 502 here means the selected WhatsApp provider rejected/failed the
-    // outbound request; it does NOT mean the Vercel function crashed.
     console.error(
       `[Handoff] upstream failure provider=${result.provider || '-'} requestId=${result.requestId} status=${result.status} error=${result.error || 'unknown'}`
     );
