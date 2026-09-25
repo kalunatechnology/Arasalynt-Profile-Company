@@ -8,6 +8,12 @@ export const dynamic = 'force-dynamic';
 const WEBHOOK_SECRET =
   process.env.GATEWAY_WEBHOOK_SECRET || WA_CONFIG.secret;
 
+type MetaSignatureCheck = {
+  valid: boolean;
+  reason: 'ok' | 'app_secret_not_configured' | 'signature_missing_or_malformed' | 'signature_mismatch';
+  source?: string;
+};
+
 function extractWebsiteSessionId(text: string): string {
   const match = String(text || '').match(
     /\[#(guest_[a-zA-Z0-9_-]+)\]|#(guest_[a-zA-Z0-9_-]+)/i
@@ -15,29 +21,46 @@ function extractWebsiteSessionId(text: string): string {
   return match?.[1] || match?.[2] || '';
 }
 
-function verifyMetaSignature(rawBody: string, signature: string | null): boolean {
-  const appSecret = WA_CONFIG.cloudAppSecret;
+/**
+ * Verify Meta's x-hub-signature-256 against the exact raw request body.
+ *
+ * Meta signs webhook payloads with the Meta App Secret. To support safe secret
+ * rotation and deployments that used a common alias previously, all configured
+ * candidates are checked without ever logging their values.
+ */
+function verifyMetaSignature(rawBody: string, signature: string | null): MetaSignatureCheck {
+  const candidates = WA_CONFIG.cloudAppSecrets;
 
-  // During initial webhook setup APP_SECRET may still be unset. Once it is set,
-  // every Meta POST must carry a valid x-hub-signature-256.
-  if (!appSecret) return true;
-  if (!signature || !signature.startsWith('sha256=')) return false;
+  if (candidates.length === 0) {
+    return { valid: false, reason: 'app_secret_not_configured' };
+  }
 
-  const received = signature.slice('sha256='.length).trim();
-  const expected = createHmac('sha256', appSecret)
-    .update(rawBody, 'utf8')
-    .digest('hex');
+  if (!signature || !signature.toLowerCase().startsWith('sha256=')) {
+    return { valid: false, reason: 'signature_missing_or_malformed' };
+  }
 
-  try {
-    const receivedBuffer = Buffer.from(received, 'hex');
-    const expectedBuffer = Buffer.from(expected, 'hex');
-    return (
+  const receivedHex = signature.slice('sha256='.length).trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(receivedHex)) {
+    return { valid: false, reason: 'signature_missing_or_malformed' };
+  }
+
+  const receivedBuffer = Buffer.from(receivedHex, 'hex');
+
+  for (const candidate of candidates) {
+    const expectedHex = createHmac('sha256', candidate.value)
+      .update(rawBody, 'utf8')
+      .digest('hex');
+    const expectedBuffer = Buffer.from(expectedHex, 'hex');
+
+    if (
       receivedBuffer.length === expectedBuffer.length &&
       timingSafeEqual(receivedBuffer, expectedBuffer)
-    );
-  } catch {
-    return false;
+    ) {
+      return { valid: true, reason: 'ok', source: candidate.source };
+    }
   }
+
+  return { valid: false, reason: 'signature_mismatch' };
 }
 
 /**
@@ -81,9 +104,6 @@ async function handleMetaWebhook(
 
   for (const entry of payload?.entry || []) {
     for (const change of entry?.changes || []) {
-      // WhatsApp inbound messages and delivery statuses are delivered through
-      // the "messages" webhook field. Other subscribed fields must not become
-      // website live-chat rows.
       if (change?.field && change.field !== 'messages') {
         ignored++;
         continue;
@@ -128,8 +148,6 @@ async function handleMetaWebhook(
           continue;
         }
 
-        // Same routing contract as crm wa: CS keeps the [#guest_xxx] tag on
-        // WhatsApp, while recordLiveChatMessage strips it from the website UI.
         const sessionId = extractWebsiteSessionId(body);
         if (!sessionId) {
           console.warn(
@@ -251,6 +269,8 @@ export async function POST(req: NextRequest) {
   const requestId = Math.random().toString(36).slice(2, 8);
 
   try {
+    // IMPORTANT: read the body exactly once as text. Parsing req.json() first
+    // would change what is signed and make every valid Meta signature fail.
     const rawBody = await req.text();
     if (!rawBody) {
       return NextResponse.json({ status: 'ignored', reason: 'Empty body' });
@@ -275,13 +295,27 @@ export async function POST(req: NextRequest) {
       }
 
       const signature = req.headers.get('x-hub-signature-256');
-      if (!verifyMetaSignature(rawBody, signature)) {
-        console.warn('[MetaWebhook] Invalid x-hub-signature-256. reqId=' + requestId);
-        return NextResponse.json({ error: 'Invalid Meta signature' }, { status: 401 });
+      const signatureCheck = verifyMetaSignature(rawBody, signature);
+
+      if (!signatureCheck.valid) {
+        console.warn(
+          `[MetaWebhook][reqId:${requestId}] Signature rejected reason=${signatureCheck.reason} configuredSecretCount=${WA_CONFIG.cloudAppSecrets.length}`
+        );
+        return NextResponse.json(
+          {
+            error: 'Invalid Meta signature',
+            code: signatureCheck.reason,
+            hint:
+              signatureCheck.reason === 'signature_mismatch'
+                ? 'WHATSAPP_CLOUD_APP_SECRET must be the Meta App Secret for the app that owns this webhook subscription.'
+                : undefined,
+          },
+          { status: 401 }
+        );
       }
 
       console.info(
-        `[MetaWebhook][reqId:${requestId}] Valid Meta webhook received.`
+        `[MetaWebhook][reqId:${requestId}] Valid Meta webhook received secretSource=${signatureCheck.source || 'configured'}.`
       );
       return handleMetaWebhook(payload, requestId);
     }
