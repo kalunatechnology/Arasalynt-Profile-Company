@@ -36,6 +36,20 @@ function isValidPhoneNumberId(raw: string): boolean {
   return /^\d{5,}$/.test(String(raw || '').trim());
 }
 
+function uniqueSecrets(values: Array<[string, string | undefined]>): Array<{ source: string; value: string }> {
+  const seen = new Set<string>();
+  const result: Array<{ source: string; value: string }> = [];
+
+  for (const [source, raw] of values) {
+    const value = String(raw || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push({ source, value });
+  }
+
+  return result;
+}
+
 export const WA_CONFIG = {
   /**
    * Keep legacy crm wa as the default so existing deployments do not change
@@ -80,8 +94,26 @@ export const WA_CONFIG = {
     return (process.env.WHATSAPP_CLOUD_VERIFY_TOKEN || '').trim();
   },
 
+  /**
+   * Accept the canonical Meta App Secret plus common aliases and one previous
+   * secret for zero-downtime secret rotation. Values are deduplicated and
+   * never exposed by status endpoints or logs.
+   */
+  get cloudAppSecrets(): Array<{ source: string; value: string }> {
+    return uniqueSecrets([
+      ['WHATSAPP_CLOUD_APP_SECRET', process.env.WHATSAPP_CLOUD_APP_SECRET],
+      ['META_APP_SECRET', process.env.META_APP_SECRET],
+      ['FACEBOOK_APP_SECRET', process.env.FACEBOOK_APP_SECRET],
+      ['WHATSAPP_CLOUD_APP_SECRET_PREVIOUS', process.env.WHATSAPP_CLOUD_APP_SECRET_PREVIOUS],
+    ]);
+  },
+
   get cloudAppSecret(): string {
-    return (process.env.WHATSAPP_CLOUD_APP_SECRET || '').trim();
+    return this.cloudAppSecrets[0]?.value || '';
+  },
+
+  get cloudAppSecretSources(): string[] {
+    return this.cloudAppSecrets.map((item) => item.source);
   },
 
   get cloudCsPhone(): string {
@@ -99,8 +131,8 @@ export const WA_CONFIG = {
   },
 
   /**
-   * Human-readable validation used by API routes/logging. Never includes secret
-   * values, so it is safe to return to the website for diagnostics.
+   * Outbound Meta validation. This deliberately remains separate from webhook
+   * validation because outbound can be healthy while inbound is misconfigured.
    */
   get cloudConfigError(): string {
     if (!this.cloudPhoneNumberId) {
@@ -119,6 +151,28 @@ export const WA_CONFIG = {
       return 'WHATSAPP_CLOUD_CS_PHONE tidak valid; gunakan nomor internasional hanya angka, contoh 628xxxxxxxxxx.';
     }
     return '';
+  },
+
+  /**
+   * Inbound webhook validation. Meta signs POST payloads using the Meta App
+   * Secret (NOT WAHA_API_KEY, GATEWAY_WEBHOOK_SECRET, verify token, or access
+   * token). Fail closed when the required inbound settings are missing.
+   */
+  get cloudWebhookConfigError(): string {
+    if (!this.cloudVerifyToken) {
+      return 'WHATSAPP_CLOUD_VERIFY_TOKEN belum diisi.';
+    }
+    if (this.cloudAppSecrets.length === 0) {
+      return 'Meta App Secret belum diisi. Gunakan WHATSAPP_CLOUD_APP_SECRET (disarankan), META_APP_SECRET, atau FACEBOOK_APP_SECRET.';
+    }
+    if (!this.cloudPhoneNumberId || !isValidPhoneNumberId(this.cloudPhoneNumberId)) {
+      return 'WHATSAPP_CLOUD_PHONE_NUMBER_ID belum valid untuk webhook inbound.';
+    }
+    return '';
+  },
+
+  get cloudWebhookConfigured(): boolean {
+    return this.cloudWebhookConfigError === '';
   },
 
   /**
