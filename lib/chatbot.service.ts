@@ -47,6 +47,35 @@ const getBaseUrl = (): string => {
   return (process.env.NEXT_PUBLIC_CHATBOT_API_URL || 'https://chatbot-arsalynk.vercel.app').replace(/\/$/, '');
 };
 
+const BROWSER_EXTERNAL_USER_KEY = 'arsai_enterprise_external_user_id';
+let inMemoryExternalUserId = '';
+
+function createGuestExternalUserId(): string {
+  return `guest_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveExternalUserId(provided?: string): string {
+  const explicit = String(provided || '').trim();
+  if (explicit) return explicit;
+
+  if (typeof window === 'undefined') {
+    if (!inMemoryExternalUserId) inMemoryExternalUserId = createGuestExternalUserId();
+    return inMemoryExternalUserId;
+  }
+
+  try {
+    const stored = window.sessionStorage.getItem(BROWSER_EXTERNAL_USER_KEY);
+    if (stored) return stored;
+
+    const generated = createGuestExternalUserId();
+    window.sessionStorage.setItem(BROWSER_EXTERNAL_USER_KEY, generated);
+    return generated;
+  } catch {
+    if (!inMemoryExternalUserId) inMemoryExternalUserId = createGuestExternalUserId();
+    return inMemoryExternalUserId;
+  }
+}
+
 export interface StreamChatOptions {
   message: string;
   conversationId?: string | null;
@@ -72,11 +101,7 @@ export async function streamChatCompletion({
   onDone,
   onError,
 }: StreamChatOptions): Promise<void> {
-  if (!externalUserId) {
-    const error = new Error('externalUserId is required for enterprise ArsAI sessions');
-    onError?.(error);
-    throw error;
-  }
+  const resolvedExternalUserId = resolveExternalUserId(externalUserId);
 
   try {
     const response = await fetch('/api/chatbot/chat', {
@@ -87,7 +112,7 @@ export async function streamChatCompletion({
       body: JSON.stringify({
         message,
         conversationId: conversationId || undefined,
-        externalUserId,
+        externalUserId: resolvedExternalUserId,
       }),
       cache: 'no-store',
       signal,
