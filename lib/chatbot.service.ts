@@ -7,10 +7,14 @@ import {
   QuickActionItem,
 } from '@/types/chatbot';
 
+/**
+ * Legacy caller metadata is retained only for old helper APIs. The public web
+ * chat no longer embeds a caller bearer token in the browser bundle.
+ */
 export const DEFAULT_CALLER_CONFIG = {
   callerName: process.env.NEXT_PUBLIC_CHATBOT_CALLER_NAME || 'PT Sinergi Muda Arsa',
   callerId: process.env.NEXT_PUBLIC_CHATBOT_CALLER_ID || 'cmtij4gk90003uo1l6ydj6pbf',
-  callerToken: process.env.NEXT_PUBLIC_CHATBOT_CALLER_TOKEN || 'cb_live_0080c942f880b04ad7f3fba231432c1de43aefb24b201bd7',
+  callerToken: '',
 };
 
 export const ARSAI_QUICK_ACTIONS: QuickActionItem[] = [
@@ -47,6 +51,7 @@ export interface StreamChatOptions {
   message: string;
   conversationId?: string | null;
   externalUserId?: string;
+  /** @deprecated Enterprise chat auth is now server-side. */
   callerToken?: string;
   signal?: AbortSignal;
   onChunk: (delta: string) => void;
@@ -55,38 +60,36 @@ export interface StreamChatOptions {
 }
 
 /**
- * Stream AI Chat Completions using Server-Sent Events (SSE)
+ * Stream AI Chat Completions through the same-origin server proxy.
+ * Tenant API key + signed Runtime Context V2 never reach the browser.
  */
 export async function streamChatCompletion({
   message,
   conversationId,
-  externalUserId = DEFAULT_CALLER_CONFIG.callerId,
-  callerToken = DEFAULT_CALLER_CONFIG.callerToken,
+  externalUserId,
   signal,
   onChunk,
   onDone,
   onError,
 }: StreamChatOptions): Promise<void> {
-  const url = `${getBaseUrl()}/api/v1/chat/completions`;
+  if (!externalUserId) {
+    const error = new Error('externalUserId is required for enterprise ArsAI sessions');
+    onError?.(error);
+    throw error;
+  }
 
   try {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${callerToken}`,
-    };
-
-    if (externalUserId) {
-      headers['X-External-User-Id'] = externalUserId;
-    }
-
-    const response = await fetch(url, {
+    const response = await fetch('/api/chatbot/chat', {
       method: 'POST',
-      headers,
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
         message,
         conversationId: conversationId || undefined,
-        callerId: DEFAULT_CALLER_CONFIG.callerId,
+        externalUserId,
       }),
+      cache: 'no-store',
       signal,
     });
 
@@ -96,11 +99,13 @@ export async function streamChatCompletion({
         const errorJson = await response.json();
         if (errorJson?.error?.message) {
           errorMessage = errorJson.error.message;
+        } else if (typeof errorJson?.error === 'string') {
+          errorMessage = errorJson.error;
         } else if (errorJson?.message) {
           errorMessage = errorJson.message;
         }
       } catch {
-        // ignore json parse error
+        // ignore JSON parse error
       }
       throw new Error(errorMessage);
     }
@@ -123,36 +128,31 @@ export async function streamChatCompletion({
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(':')) continue; // skip keep-alive comments
+        if (!trimmed || trimmed.startsWith(':')) continue;
+        if (!trimmed.startsWith('data:')) continue;
 
-        if (trimmed.startsWith('data:')) {
-          const rawData = trimmed.replace(/^data:\s*/, '').trim();
+        const rawData = trimmed.replace(/^data:\s*/, '').trim();
+        if (!rawData || rawData === '[DONE]') continue;
 
-          if (rawData === '[DONE]') {
-            continue;
-          }
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(rawData);
+        } catch {
+          onChunk(rawData);
+          continue;
+        }
 
-          try {
-            const parsed = JSON.parse(rawData);
-            if (parsed.event === 'chunk' && parsed.data?.delta) {
-              onChunk(parsed.data.delta);
-            } else if (parsed.event === 'done') {
-              onDone?.(parsed.data || {});
-            } else if (parsed.event === 'error') {
-              throw new Error(parsed.data?.message || 'Chatbot streaming error');
-            }
-          } catch {
-            // If raw text is not JSON, check if it's direct delta
-            if (rawData && rawData !== '[DONE]') {
-              onChunk(rawData);
-            }
-          }
+        if (parsed.event === 'chunk' && parsed.data?.delta) {
+          onChunk(parsed.data.delta);
+        } else if (parsed.event === 'done') {
+          onDone?.(parsed.data || {});
+        } else if (parsed.event === 'error') {
+          throw new Error(parsed.data?.message || 'Chatbot streaming error');
         }
       }
     }
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
-      // User aborted stream
       return;
     }
     const errorObj = err instanceof Error ? err : new Error(String(err));
@@ -162,8 +162,17 @@ export async function streamChatCompletion({
 }
 
 /**
- * Fetch all conversations for current caller/user
+ * The helpers below are legacy direct-client APIs retained for compatibility.
+ * They require an explicit caller token and are not used by the public ArsAI flow.
  */
+function requireLegacyCallerToken(token: string): string {
+  const normalized = String(token || '').trim();
+  if (!normalized) {
+    throw new Error('Legacy caller token is required explicitly; public token fallback has been removed.');
+  }
+  return normalized;
+}
+
 export async function getConversations(
   callerToken: string = DEFAULT_CALLER_CONFIG.callerToken
 ): Promise<Conversation[]> {
@@ -171,7 +180,7 @@ export async function getConversations(
   const res = await fetch(url, {
     method: 'GET',
     headers: {
-      'Authorization': `Bearer ${callerToken}`,
+      'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
       'Content-Type': 'application/json',
     },
   });
@@ -184,9 +193,6 @@ export async function getConversations(
   return json.data || [];
 }
 
-/**
- * Create a new conversation record
- */
 export async function createConversation(
   title?: string,
   externalUserId?: string,
@@ -194,7 +200,7 @@ export async function createConversation(
 ): Promise<Conversation> {
   const url = `${getBaseUrl()}/api/v1/conversations`;
   const headers: Record<string, string> = {
-    'Authorization': `Bearer ${callerToken}`,
+    'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
     'Content-Type': 'application/json',
   };
   if (externalUserId) {
@@ -215,9 +221,6 @@ export async function createConversation(
   return json.data;
 }
 
-/**
- * Get detailed conversation history with messages
- */
 export async function getConversationDetail(
   conversationId: string,
   callerToken: string = DEFAULT_CALLER_CONFIG.callerToken
@@ -226,7 +229,7 @@ export async function getConversationDetail(
   const res = await fetch(url, {
     method: 'GET',
     headers: {
-      'Authorization': `Bearer ${callerToken}`,
+      'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
       'Content-Type': 'application/json',
     },
   });
@@ -239,9 +242,6 @@ export async function getConversationDetail(
   return json.data;
 }
 
-/**
- * Delete a conversation
- */
 export async function deleteConversation(
   conversationId: string,
   callerToken: string = DEFAULT_CALLER_CONFIG.callerToken
@@ -250,7 +250,7 @@ export async function deleteConversation(
   const res = await fetch(url, {
     method: 'DELETE',
     headers: {
-      'Authorization': `Bearer ${callerToken}`,
+      'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
     },
   });
 
@@ -262,9 +262,6 @@ export async function deleteConversation(
   return Boolean(json.data?.deleted ?? true);
 }
 
-/**
- * List all knowledge base documents
- */
 export async function getKnowledgeDocuments(
   callerToken: string = DEFAULT_CALLER_CONFIG.callerToken
 ): Promise<KnowledgeDocument[]> {
@@ -272,7 +269,7 @@ export async function getKnowledgeDocuments(
   const res = await fetch(url, {
     method: 'GET',
     headers: {
-      'Authorization': `Bearer ${callerToken}`,
+      'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
       'Content-Type': 'application/json',
     },
   });
@@ -285,9 +282,6 @@ export async function getKnowledgeDocuments(
   return json.data || [];
 }
 
-/**
- * Ingest direct text into knowledge base
- */
 export async function addTextKnowledge(
   title: string,
   content: string,
@@ -297,7 +291,7 @@ export async function addTextKnowledge(
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${callerToken}`,
+      'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ title, content }),
@@ -311,9 +305,6 @@ export async function addTextKnowledge(
   return json.data;
 }
 
-/**
- * Upload document file to knowledge base
- */
 export async function uploadKnowledgeDocument(
   file: File,
   title?: string,
@@ -327,7 +318,7 @@ export async function uploadKnowledgeDocument(
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${callerToken}`,
+      'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
     },
     body: formData,
   });
@@ -340,9 +331,6 @@ export async function uploadKnowledgeDocument(
   return json.data;
 }
 
-/**
- * Search / RAG simulator
- */
 export async function searchKnowledge(
   query: string,
   topK: number = 5,
@@ -352,7 +340,7 @@ export async function searchKnowledge(
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${callerToken}`,
+      'Authorization': `Bearer ${requireLegacyCallerToken(callerToken)}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ query, topK }),
