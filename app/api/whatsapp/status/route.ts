@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic';
  * GET /api/whatsapp/status
  *
  * BAYPASS=true  -> proxy stable crm wa /api/status
- * BAYPASS=false -> validate the configured Meta Cloud phone/token directly
+ * BAYPASS=false -> validate Meta Cloud outbound connectivity and report
+ *                  inbound webhook readiness separately.
  */
 export async function GET() {
   if (!WA_CONFIG.baypass) {
@@ -17,6 +18,9 @@ export async function GET() {
           ready: false,
           status: 'config_error',
           provider: 'meta_cloud',
+          outboundReady: false,
+          inboundReady: WA_CONFIG.cloudWebhookConfigured,
+          webhookConfigError: WA_CONFIG.cloudWebhookConfigError || null,
           error:
             'Meta Cloud belum lengkap. Pastikan PHONE_NUMBER_ID, ACCESS_TOKEN, dan WHATSAPP_CLOUD_CS_PHONE terisi.',
         },
@@ -51,22 +55,33 @@ export async function GET() {
             ready: false,
             status: 'meta_api_error',
             provider: 'meta_cloud',
+            outboundReady: false,
+            inboundReady: WA_CONFIG.cloudWebhookConfigured,
+            webhookConfigError: WA_CONFIG.cloudWebhookConfigError || null,
             error: metaError,
           },
           { status: 502 }
         );
       }
 
+      const inboundReady = WA_CONFIG.cloudWebhookConfigured;
+
       return NextResponse.json({
-        ready: true,
-        status: 'connected',
+        ready: inboundReady,
+        status: inboundReady ? 'connected' : 'webhook_config_error',
         provider: 'meta_cloud',
         mode: 'direct_text',
+        outboundReady: true,
+        inboundReady,
         phoneNumberId: data?.id || WA_CONFIG.cloudPhoneNumberId,
         displayPhoneNumber: data?.display_phone_number || null,
         verifiedName: data?.verified_name || null,
         destinationPhone: WA_CONFIG.cloudCsPhone,
-        webhookConfigured: Boolean(WA_CONFIG.cloudVerifyToken),
+        webhookConfigured: inboundReady,
+        webhookVerifyTokenConfigured: Boolean(WA_CONFIG.cloudVerifyToken),
+        webhookSignatureSecretConfigured: WA_CONFIG.cloudAppSecrets.length > 0,
+        webhookSignatureSecretSources: WA_CONFIG.cloudAppSecretSources,
+        webhookConfigError: WA_CONFIG.cloudWebhookConfigError || null,
       });
     } catch (err: unknown) {
       const isTimeout = err instanceof Error && err.name === 'AbortError';
@@ -81,6 +96,9 @@ export async function GET() {
           ready: false,
           status: 'unreachable',
           provider: 'meta_cloud',
+          outboundReady: false,
+          inboundReady: WA_CONFIG.cloudWebhookConfigured,
+          webhookConfigError: WA_CONFIG.cloudWebhookConfigError || null,
           error: msg,
         },
         { status: 503 }
